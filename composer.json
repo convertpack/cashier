@@ -1,6 +1,6 @@
 {
-    "name": "laravel/cashier",
-    "description": "Laravel Cashier provides an expressive, fluent interface to Stripe's subscription billing services.",
+    "name": "convertpack/cashier",
+    "description": "Convertpack fork of Laravel Cashier.",
     "keywords": ["laravel", "stripe", "billing"],
     "license": "MIT",
     "support": {
