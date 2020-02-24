@@ -6,7 +6,8 @@ use Carbon\Carbon;
 use LogicException;
 use DateTimeInterface;
 use Stripe\Error\Card as StripeCard;
-use Illuminate\Database\Eloquent\Model;
+//use Illuminate\Database\Eloquent\Model;
+use Jenssegers\Mongodb\Eloquent\Model;
 
 class Subscription extends Model
 {
