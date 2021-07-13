@@ -54,7 +54,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-master": "13.x-dev"
+            "dev-master": "mongo-dev"
         },
         "laravel": {
             "providers": [
