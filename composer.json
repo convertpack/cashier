@@ -53,9 +53,6 @@
         }
     },
     "extra": {
-        "branch-alias": {
-            "dev-master": "mongo-dev"
-        },
         "laravel": {
             "providers": [
                 "Laravel\\Cashier\\CashierServiceProvider"
