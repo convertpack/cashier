@@ -1,19 +1,20 @@
 <?php
 
-namespace Laravel\Cashier\Tests\Integration;
+namespace Laravel\Cashier\Tests\Feature;
 
+use Laravel\Cashier\Exceptions\InvalidCustomer;
 use Laravel\Cashier\Exceptions\InvalidInvoice;
-use Laravel\Cashier\Exceptions\InvalidStripeCustomer;
 use Laravel\Cashier\Invoice;
+use Stripe\InvoiceItem as StripeInvoiceItem;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
-class InvoicesTest extends IntegrationTestCase
+class InvoicesTest extends FeatureTestCase
 {
     public function test_require_stripe_customer_for_invoicing()
     {
         $user = $this->createCustomer('require_stripe_customer_for_invoicing');
 
-        $this->expectException(InvalidStripeCustomer::class);
+        $this->expectException(InvalidCustomer::class);
 
         $user->invoice();
     }
@@ -39,6 +40,26 @@ class InvoicesTest extends IntegrationTestCase
 
         $this->assertInstanceOf(Invoice::class, $response);
         $this->assertEquals(49900, $response->total);
+    }
+
+    public function test_customer_can_be_invoiced_with_a_price()
+    {
+        $user = $this->createCustomer('customer_can_be_invoiced');
+        $user->createAsStripeCustomer();
+        $user->updateDefaultPaymentMethod('pm_card_visa');
+
+        $price = $user->stripe()->prices->create([
+            'currency' => $user->preferredCurrency(),
+            'product_data' => [
+                'name' => 'Laravel T-shirt',
+            ],
+            'unit_amount' => 499,
+        ]);
+
+        $response = $user->invoicePrice($price, 2);
+
+        $this->assertInstanceOf(Invoice::class, $response);
+        $this->assertEquals(998, $response->total);
     }
 
     public function test_find_invoice_by_id()
@@ -83,5 +104,26 @@ class InvoicesTest extends IntegrationTestCase
         $this->expectException(AccessDeniedHttpException::class);
 
         $otherUser->findInvoiceOrFail($invoice->id);
+    }
+
+    public function test_customer_can_be_invoiced_with_quantity()
+    {
+        $user = $this->createCustomer('customer_can_be_invoiced_with_quantity');
+        $user->createAsStripeCustomer();
+        $user->updateDefaultPaymentMethod('pm_card_visa');
+
+        $response = $user->invoiceFor('Laracon', 1000, ['quantity' => 5]);
+
+        $this->assertInstanceOf(Invoice::class, $response);
+        $this->assertEquals(5000, $response->total);
+
+        $response = $user->tab('Laracon', null, [
+            'unit_amount' => 1000,
+            'quantity' => 2,
+        ]);
+
+        $this->assertInstanceOf(StripeInvoiceItem::class, $response);
+        $this->assertEquals(1000, $response->unit_amount);
+        $this->assertEquals(2, $response->quantity);
     }
 }

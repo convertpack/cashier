@@ -13,7 +13,7 @@ use Laravel\Cashier\Events\WebhookReceived;
 use Laravel\Cashier\Http\Middleware\VerifyWebhookSignature;
 use Laravel\Cashier\Payment;
 use Laravel\Cashier\Subscription;
-use Stripe\PaymentIntent as StripePaymentIntent;
+use Stripe\Subscription as StripeSubscription;
 use Symfony\Component\HttpFoundation\Response;
 
 class WebhookController extends Controller
@@ -51,7 +51,65 @@ class WebhookController extends Controller
             return $response;
         }
 
-        return $this->missingMethod();
+        return $this->missingMethod($payload);
+    }
+
+    /**
+     * Handle customer subscription created.
+     *
+     * @param  array $payload
+     * @return \Symfony\Component\HttpFoundation\Response
+     */
+    protected function handleCustomerSubscriptionCreated(array $payload)
+    {
+        $user = $this->getUserByStripeId($payload['data']['object']['customer']);
+
+        if ($user) {
+            $data = $payload['data']['object'];
+
+            if (! $user->subscriptions->contains('stripe_id', $data['id'])) {
+                if (isset($data['trial_end'])) {
+                    $trialEndsAt = Carbon::createFromTimestamp($data['trial_end']);
+                } else {
+                    $trialEndsAt = null;
+                }
+
+                $firstItem = $data['items']['data'][0];
+                $isSinglePrice = count($data['items']['data']) === 1;
+
+                $subscription = $user->subscriptions()->create([
+                    'name' => $data['metadata']['name'] ?? $this->newSubscriptionName($payload),
+                    'stripe_id' => $data['id'],
+                    'stripe_status' => $data['status'],
+                    'stripe_price' => $isSinglePrice ? $firstItem['price']['id'] : null,
+                    'quantity' => $isSinglePrice && isset($firstItem['quantity']) ? $firstItem['quantity'] : null,
+                    'trial_ends_at' => $trialEndsAt,
+                    'ends_at' => null,
+                ]);
+
+                foreach ($data['items']['data'] as $item) {
+                    $subscription->items()->create([
+                        'stripe_id' => $item['id'],
+                        'stripe_product' => $item['price']['product'],
+                        'stripe_price' => $item['price']['id'],
+                        'quantity' => $item['quantity'] ?? null,
+                    ]);
+                }
+            }
+        }
+
+        return $this->successMethod();
+    }
+
+    /**
+     * Determines the name that should be used when new subscriptions are created from the Stripe dashboard.
+     *
+     * @param  array  $payload
+     * @return string
+     */
+    protected function newSubscriptionName(array $payload)
+    {
+        return 'default';
     }
 
     /**
@@ -68,28 +126,31 @@ class WebhookController extends Controller
             $user->subscriptions->filter(function (Subscription $subscription) use ($data) {
                 return $subscription->stripe_id === $data['id'];
             })->each(function (Subscription $subscription) use ($data) {
-                if (isset($data['status']) && $data['status'] === 'incomplete_expired') {
+                if (
+                    isset($data['status']) &&
+                    $data['status'] === StripeSubscription::STATUS_INCOMPLETE_EXPIRED
+                ) {
+                    $subscription->items()->delete();
                     $subscription->delete();
 
                     return;
                 }
 
-                // Quantity...
-                if (isset($data['quantity'])) {
-                    $subscription->quantity = $data['quantity'];
-                }
+                $firstItem = $data['items']['data'][0];
+                $isSinglePrice = count($data['items']['data']) === 1;
 
-                // Plan...
-                if (isset($data['plan']['id'])) {
-                    $subscription->stripe_plan = $data['plan']['id'];
-                }
+                // Price...
+                $subscription->stripe_price = $isSinglePrice ? $firstItem['price']['id'] : null;
+
+                // Quantity...
+                $subscription->quantity = $isSinglePrice && isset($firstItem['quantity']) ? $firstItem['quantity'] : null;
 
                 // Trial ending date...
                 if (isset($data['trial_end'])) {
-                    $trial_ends = Carbon::createFromTimestamp($data['trial_end']);
+                    $trialEnd = Carbon::createFromTimestamp($data['trial_end']);
 
-                    if (! $subscription->trial_ends_at || $subscription->trial_ends_at->ne($trial_ends)) {
-                        $subscription->trial_ends_at = $trial_ends;
+                    if (! $subscription->trial_ends_at || $subscription->trial_ends_at->ne($trialEnd)) {
+                        $subscription->trial_ends_at = $trialEnd;
                     }
                 }
 
@@ -99,6 +160,8 @@ class WebhookController extends Controller
                         $subscription->ends_at = $subscription->onTrial()
                             ? $subscription->trial_ends_at
                             : Carbon::createFromTimestamp($data['current_period_end']);
+                    } elseif (isset($data['cancel_at'])) {
+                        $subscription->ends_at = Carbon::createFromTimestamp($data['cancel_at']);
                     } else {
                         $subscription->ends_at = null;
                     }
@@ -110,6 +173,26 @@ class WebhookController extends Controller
                 }
 
                 $subscription->save();
+
+                // Update subscription items...
+                if (isset($data['items'])) {
+                    $prices = [];
+
+                    foreach ($data['items']['data'] as $item) {
+                        $prices[] = $item['price']['id'];
+
+                        $subscription->items()->updateOrCreate([
+                            'stripe_id' => $item['id'],
+                        ], [
+                            'stripe_product' => $item['price']['product'],
+                            'stripe_price' => $item['price']['id'],
+                            'quantity' => $item['quantity'] ?? null,
+                        ]);
+                    }
+
+                    // Delete items that aren't attached to the subscription anymore...
+                    $subscription->items()->whereNotIn('stripe_price', $prices)->delete();
+                }
             });
         }
 
@@ -166,8 +249,8 @@ class WebhookController extends Controller
             $user->forceFill([
                 'stripe_id' => null,
                 'trial_ends_at' => null,
-                'card_brand' => null,
-                'card_last_four' => null,
+                'pm_type' => null,
+                'pm_last_four' => null,
             ])->save();
         }
 
@@ -188,9 +271,8 @@ class WebhookController extends Controller
 
         if ($user = $this->getUserByStripeId($payload['data']['object']['customer'])) {
             if (in_array(Notifiable::class, class_uses_recursive($user))) {
-                $payment = new Payment(StripePaymentIntent::retrieve(
-                    $payload['data']['object']['payment_intent'],
-                    $user->stripeOptions()
+                $payment = new Payment(Cashier::stripe()->paymentIntents->retrieve(
+                    $payload['data']['object']['payment_intent']
                 ));
 
                 $user->notify(new $notification($payment));
@@ -201,7 +283,7 @@ class WebhookController extends Controller
     }
 
     /**
-     * Get the billable entity instance by Stripe ID.
+     * Get the customer instance by Stripe ID.
      *
      * @param  string|null  $stripeId
      * @return \Laravel\Cashier\Billable|null

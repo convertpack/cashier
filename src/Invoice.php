@@ -4,14 +4,19 @@ namespace Laravel\Cashier;
 
 use Carbon\Carbon;
 use Dompdf\Dompdf;
+use Dompdf\Options;
+use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Contracts\Support\Jsonable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\View;
+use JsonSerializable;
 use Laravel\Cashier\Exceptions\InvalidInvoice;
+use Stripe\Customer as StripeCustomer;
 use Stripe\Invoice as StripeInvoice;
 use Stripe\InvoiceLineItem as StripeInvoiceLineItem;
 use Symfony\Component\HttpFoundation\Response;
 
-class Invoice
+class Invoice implements Arrayable, Jsonable, JsonSerializable
 {
     /**
      * The Stripe model instance.
@@ -28,11 +33,32 @@ class Invoice
     protected $invoice;
 
     /**
-     * The Stripe invoice items.
+     * The Stripe invoice line items.
      *
-     * @var \Stripe\Collection|\Stripe\InvoiceLineItem[]
+     * @var \Laravel\Cashier\InvoiceLineItem[]
      */
     protected $items;
+
+    /**
+     * The taxes applied to the invoice.
+     *
+     * @var \Laravel\Cashier\Tax[]
+     */
+    protected $taxes;
+
+    /**
+     * The taxes applied to the invoice.
+     *
+     * @var \Laravel\Cashier\Discount[]
+     */
+    protected $discounts;
+
+    /**
+     * Indicate if the Stripe Object was refreshed with extra data.
+     *
+     * @var bool
+     */
+    protected $refreshed = false;
 
     /**
      * Create a new invoice instance.
@@ -54,16 +80,31 @@ class Invoice
     }
 
     /**
-     * Get a Carbon date for the invoice.
+     * Get a Carbon instance for the invoicing date.
      *
      * @param  \DateTimeZone|string  $timezone
      * @return \Carbon\Carbon
      */
     public function date($timezone = null)
     {
-        $carbon = Carbon::createFromTimestampUTC($this->invoice->created ?? $this->invoice->date);
+        $carbon = Carbon::createFromTimestampUTC($this->invoice->created);
 
         return $timezone ? $carbon->setTimezone($timezone) : $carbon;
+    }
+
+    /**
+     * Get a Carbon instance for the invoice's due date.
+     *
+     * @param  \DateTimeZone|string  $timezone
+     * @return \Carbon\Carbon|null
+     */
+    public function dueDate($timezone = null)
+    {
+        if ($this->invoice->due_date) {
+            $carbon = Carbon::createFromTimestampUTC($this->invoice->due_date);
+
+            return $timezone ? $carbon->setTimezone($timezone) : $carbon;
+        }
     }
 
     /**
@@ -127,79 +168,96 @@ class Invoice
     }
 
     /**
-     * Determine if the invoice has a discount.
+     * Determine if the invoice has one or more discounts applied.
      *
      * @return bool
      */
     public function hasDiscount()
     {
-        return $this->invoice->subtotal > 0 &&
-            $this->invoice->subtotal != $this->invoice->total &&
-            ! is_null($this->invoice->discount);
+        if (is_null($this->invoice->discounts)) {
+            return false;
+        }
+
+        return count($this->invoice->discounts) > 0;
     }
 
     /**
-     * Get the discount amount.
+     * Get all of the discount objects from the Stripe invoice.
+     *
+     * @return \Laravel\Cashier\Discount[]
+     */
+    public function discounts()
+    {
+        if (! is_null($this->discounts)) {
+            return $this->discounts;
+        }
+
+        $this->refreshWithExpandedData();
+
+        return Collection::make($this->invoice->discounts)
+            ->mapInto(Discount::class)
+            ->all();
+    }
+
+    /**
+     * Calculate the amount for a given discount.
+     *
+     * @param  \Laravel\Cashier\Discount  $discount
+     * @return string|null
+     */
+    public function discountFor(Discount $discount)
+    {
+        if (! is_null($discountAmount = $this->rawDiscountFor($discount))) {
+            return $this->formatAmount($discountAmount->amount);
+        }
+    }
+
+    /**
+     * Calculate the raw amount for a given discount.
+     *
+     * @param  \Laravel\Cashier\Discount  $discount
+     * @return int|null
+     */
+    public function rawDiscountFor(Discount $discount)
+    {
+        return Collection::make($this->invoice->total_discount_amounts)
+            ->first(function ($discountAmount) use ($discount) {
+                if (is_string($discountAmount->discount)) {
+                    return $discountAmount->discount === $discount->id;
+                } else {
+                    return $discountAmount->discount->id === $discount->id;
+                }
+            });
+    }
+
+    /**
+     * Get the total discount amount.
      *
      * @return string
      */
     public function discount()
     {
-        return $this->formatAmount($this->invoice->subtotal + $this->invoice->tax - $this->invoice->total);
+        return $this->formatAmount($this->rawDiscount());
     }
 
     /**
-     * Get the coupon code applied to the invoice.
-     *
-     * @return string|null
-     */
-    public function coupon()
-    {
-        if (isset($this->invoice->discount)) {
-            return $this->invoice->discount->coupon->id;
-        }
-    }
-
-    /**
-     * Determine if the discount is a percentage.
-     *
-     * @return bool
-     */
-    public function discountIsPercentage()
-    {
-        return $this->coupon() && isset($this->invoice->discount->coupon->percent_off);
-    }
-
-    /**
-     * Get the discount percentage for the invoice.
+     * Get the raw total discount amount.
      *
      * @return int
      */
-    public function percentOff()
+    public function rawDiscount()
     {
-        if ($this->coupon()) {
-            return $this->invoice->discount->coupon->percent_off;
+        $total = 0;
+
+        foreach ((array) $this->invoice->total_discount_amounts as $discount) {
+            $total += $discount->amount;
         }
 
-        return 0;
+        return (int) $total;
     }
 
     /**
-     * Get the discount amount for the invoice.
-     *
-     * @return string
-     */
-    public function amountOff()
-    {
-        if (isset($this->invoice->discount->coupon->amount_off)) {
-            return $this->formatAmount($this->invoice->discount->coupon->amount_off);
-        }
-
-        return $this->formatAmount(0);
-    }
-
-    /**
-     * Get the tax total amount.
+     * Get the total tax amount.
      *
      * @return string
      */
@@ -209,42 +267,149 @@ class Invoice
     }
 
     /**
+     * Determine if the invoice has tax applied.
+     *
+     * @return bool
+     */
+    public function hasTax()
+    {
+        $lineItems = $this->invoiceItems() + $this->subscriptions();
+
+        return Collection::make($lineItems)->contains(function (InvoiceLineItem $item) {
+            return $item->hasTaxRates();
+        });
+    }
+
+    /**
+     * Get the taxes applied to the invoice.
+     *
+     * @return \Laravel\Cashier\Tax[]
+     */
+    public function taxes()
+    {
+        if (! is_null($this->taxes)) {
+            return $this->taxes;
+        }
+
+        $this->refreshWithExpandedData();
+
+        return $this->taxes = Collection::make($this->invoice->total_tax_amounts)
+            ->sortByDesc('inclusive')
+            ->map(function (object $taxAmount) {
+                return new Tax($taxAmount->amount, $this->invoice->currency, $taxAmount->tax_rate);
+            })
+            ->all();
+    }
+
+    /**
+     * Determine if the customer is not exempted from taxes.
+     *
+     * @return bool
+     */
+    public function isNotTaxExempt()
+    {
+        return $this->invoice->customer_tax_exempt === StripeCustomer::TAX_EXEMPT_NONE;
+    }
+
+    /**
+     * Determine if the customer is exempted from taxes.
+     *
+     * @return bool
+     */
+    public function isTaxExempt()
+    {
+        return $this->invoice->customer_tax_exempt === StripeCustomer::TAX_EXEMPT_EXEMPT;
+    }
+
+    /**
+     * Determine if reverse charge applies to the customer.
+     *
+     * @return bool
+     */
+    public function reverseChargeApplies()
+    {
+        return $this->invoice->customer_tax_exempt === StripeCustomer::TAX_EXEMPT_REVERSE;
+    }
+
+    /**
      * Get all of the "invoice item" line items.
      *
-     * @return array
+     * @return \Laravel\Cashier\InvoiceLineItem[]
      */
     public function invoiceItems()
     {
-        return $this->invoiceItemsByType('invoiceitem');
+        return Collection::make($this->invoiceLineItems())->filter(function (InvoiceLineItem $item) {
+            return $item->type === 'invoiceitem';
+        })->all();
     }
 
     /**
      * Get all of the "subscription" line items.
      *
-     * @return array
+     * @return \Laravel\Cashier\InvoiceLineItem[]
      */
     public function subscriptions()
     {
-        return $this->invoiceItemsByType('subscription');
+        return Collection::make($this->invoiceLineItems())->filter(function (InvoiceLineItem $item) {
+            return $item->type === 'subscription';
+        })->all();
     }
 
     /**
-     * Get all of the invoice items by a given type.
+     * Get all of the invoice items.
      *
-     * @param  string  $type
-     * @return array
+     * @return \Laravel\Cashier\InvoiceLineItem[]
      */
-    public function invoiceItemsByType($type)
+    public function invoiceLineItems()
     {
-        if (is_null($this->items)) {
-            $this->items = new Collection($this->lines->autoPagingIterator());
+        if (! is_null($this->items)) {
+            return $this->items;
         }
 
-        return $this->items->filter(function (StripeInvoiceLineItem $item) use ($type) {
-            return $item->type === $type;
-        })->map(function (StripeInvoiceLineItem $item) {
-            return new InvoiceItem($this->owner, $item);
-        })->all();
+        $this->refreshWithExpandedData();
+
+        return $this->items = Collection::make($this->invoice->lines->autoPagingIterator())
+            ->map(function (StripeInvoiceLineItem $item) {
+                return new InvoiceLineItem($this, $item);
+            })->all();
+    }
+
+    /**
+     * Refresh the invoice with expanded objects.
+     *
+     * @return void
+     */
+    protected function refreshWithExpandedData()
+    {
+        if ($this->refreshed) {
+            return;
+        }
+
+        if ($this->invoice->id) {
+            $this->invoice = Cashier::stripe()->invoices->retrieve($this->invoice->id, [
+                'expand' => [
+                    'account_tax_ids',
+                    'discounts',
+                    'lines.data.tax_amounts.tax_rate',
+                    'total_discount_amounts.discount',
+                    'total_tax_amounts.tax_rate',
+                ],
+            ]);
+        } else {
+            // If no invoice ID is present then assume this is the customer's upcoming invoice...
+            $this->invoice = Cashier::stripe()->invoices->upcoming([
+                'customer' => $this->owner->stripe_id,
+                'expand' => [
+                    'account_tax_ids',
+                    'discounts',
+                    'lines.data.tax_amounts.tax_rate',
+                    'total_discount_amounts.discount',
+                    'total_tax_amounts.tax_rate',
+                ],
+            ]);
+        }
+
+        $this->refreshed = true;
     }
 
     /**
@@ -256,6 +421,166 @@ class Invoice
     protected function formatAmount($amount)
     {
         return Cashier::formatAmount($amount, $this->invoice->currency);
+    }
+
+    /**
+     * Return the Tax Ids of the account.
+     *
+     * @return \Stripe\TaxId[]
+     */
+    public function accountTaxIds()
+    {
+        $this->refreshWithExpandedData();
+
+        return $this->invoice->account_tax_ids ?? [];
+    }
+
+    /**
+     * Return the Tax Ids of the customer.
+     *
+     * @return array
+     */
+    public function customerTaxIds()
+    {
+        return $this->invoice->customer_tax_ids ?? [];
+    }
+
+    /**
+     * Finalize the Stripe invoice.
+     *
+     * @param  array  $options
+     * @return $this
+     */
+    public function finalize(array $options = [])
+    {
+        $this->invoice = $this->invoice->finalizeInvoice($options);
+
+        return $this;
+    }
+
+    /**
+     * Pay the Stripe invoice.
+     *
+     * @param  array  $options
+     * @return $this
+     */
+    public function pay(array $options = [])
+    {
+        $this->invoice = $this->invoice->pay($options);
+
+        return $this;
+    }
+
+    /**
+     * Send the Stripe invoice to the customer.
+     *
+     * @param  array  $options
+     * @return $this
+     */
+    public function send(array $options = [])
+    {
+        $this->invoice = $this->invoice->sendInvoice($options);
+
+        return $this;
+    }
+
+    /**
+     * Void the Stripe invoice.
+     *
+     * @param  array  $options
+     * @return $this
+     */
+    public function void(array $options = [])
+    {
+        $this->invoice = $this->invoice->voidInvoice($options);
+
+        return $this;
+    }
+
+    /**
+     * Mark an invoice as uncollectible.
+     *
+     * @param  array  $options
+     * @return $this
+     */
+    public function markUncollectible(array $options = [])
+    {
+        $this->invoice = $this->invoice->markUncollectible($options);
+
+        return $this;
+    }
+
+    /**
+     * Delete the Stripe invoice.
+     *
+     * @param  array  $options
+     * @return $this
+     */
+    public function delete(array $options = [])
+    {
+        $this->invoice = $this->invoice->delete($options);
+
+        return $this;
+    }
+
+    /**
+     * Determine if the invoice is open.
+     *
+     * @return bool
+     */
+    public function isOpen()
+    {
+        return $this->invoice->status === StripeInvoice::STATUS_OPEN;
+    }
+
+    /**
+     * Determine if the invoice is a draft.
+     *
+     * @return bool
+     */
+    public function isDraft()
+    {
+        return $this->invoice->status === StripeInvoice::STATUS_DRAFT;
+    }
+
+    /**
+     * Determine if the invoice is paid.
+     *
+     * @return bool
+     */
+    public function isPaid()
+    {
+        return $this->invoice->status === StripeInvoice::STATUS_PAID;
+    }
+
+    /**
+     * Determine if the invoice is uncollectible.
+     *
+     * @return bool
+     */
+    public function isUncollectible()
+    {
+        return $this->invoice->status === StripeInvoice::STATUS_UNCOLLECTIBLE;
+    }
+
+    /**
+     * Determine if the invoice is void.
+     *
+     * @return bool
+     */
+    public function isVoid()
+    {
+        return $this->invoice->status === StripeInvoice::STATUS_VOID;
+    }
+
+    /**
+     * Determine if the invoice is deleted.
+     *
+     * @return bool
+     */
+    public function isDeleted()
+    {
+        return $this->invoice->status === StripeInvoice::STATUS_DELETED;
     }
 
     /**
@@ -285,7 +610,10 @@ class Invoice
             define('DOMPDF_ENABLE_AUTOLOAD', false);
         }
 
-        $dompdf = new Dompdf;
+        $options = new Options;
+        $options->setChroot(base_path());
+
+        $dompdf = new Dompdf($options);
         $dompdf->setPaper(config('cashier.paper', 'letter'));
         $dompdf->loadHtml($this->view($data)->render());
         $dompdf->render();
@@ -325,6 +653,16 @@ class Invoice
     }
 
     /**
+     * Get the Stripe model instance.
+     *
+     * @return \Illuminate\Database\Eloquent\Model
+     */
+    public function owner()
+    {
+        return $this->owner;
+    }
+
+    /**
      * Get the Stripe invoice instance.
      *
      * @return \Stripe\Invoice
@@ -335,7 +673,38 @@ class Invoice
     }
 
     /**
-     * Dynamically get values from the Stripe invoice.
+     * Get the instance as an array.
+     *
+     * @return array
+     */
+    public function toArray()
+    {
+        return $this->asStripeInvoice()->toArray();
+    }
+
+    /**
+     * Convert the object to its JSON representation.
+     *
+     * @param  int  $options
+     * @return string
+     */
+    public function toJson($options = 0)
+    {
+        return json_encode($this->jsonSerialize(), $options);
+    }
+
+    /**
+     * Convert the object into something JSON serializable.
+     *
+     * @return array
+     */
+    public function jsonSerialize()
+    {
+        return $this->toArray();
+    }
+
+    /**
+     * Dynamically get values from the Stripe object.
      *
      * @param  string  $key
      * @return mixed
