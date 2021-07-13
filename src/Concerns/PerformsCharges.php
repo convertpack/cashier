@@ -2,15 +2,19 @@
 
 namespace Laravel\Cashier\Concerns;
 
-use Illuminate\Support\Collection;
-use Laravel\Cashier\Cashier;
 use Laravel\Cashier\Checkout;
 use Laravel\Cashier\Payment;
-use LogicException;
+use Stripe\PaymentIntent as StripePaymentIntent;
+use Stripe\Refund as StripeRefund;
 
 trait PerformsCharges
 {
-    use AllowsCoupons;
+    /**
+     * Determines if user redeemable promotion codes are available in Stripe Checkout.
+     *
+     * @var bool
+     */
+    protected $allowPromotionCodes = false;
 
     /**
      * Make a "one off" charge on the customer for the given amount.
@@ -20,7 +24,8 @@ trait PerformsCharges
      * @param  array  $options
      * @return \Laravel\Cashier\Payment
      *
-     * @throws \Laravel\Cashier\Exceptions\IncompletePayment
+     * @throws \Laravel\Cashier\Exceptions\PaymentActionRequired
+     * @throws \Laravel\Cashier\Exceptions\PaymentFailure
      */
     public function charge($amount, $paymentMethod, array $options = [])
     {
@@ -38,7 +43,7 @@ trait PerformsCharges
         }
 
         $payment = new Payment(
-            $this->stripe()->paymentIntents->create($options)
+            StripePaymentIntent::create($options, $this->stripeOptions())
         );
 
         $payment->validate();
@@ -55,8 +60,9 @@ trait PerformsCharges
      */
     public function refund($paymentIntent, array $options = [])
     {
-        return $this->stripe()->refunds->create(
-            ['payment_intent' => $paymentIntent] + $options
+        return StripeRefund::create(
+            ['payment_intent' => $paymentIntent] + $options,
+            $this->stripeOptions()
         );
     }
 
@@ -64,33 +70,29 @@ trait PerformsCharges
      * Begin a new checkout session for existing prices.
      *
      * @param  array|string  $items
+     * @param  int  $quantity
      * @param  array  $sessionOptions
      * @param  array  $customerOptions
      * @return \Laravel\Cashier\Checkout
      */
     public function checkout($items, array $sessionOptions = [], array $customerOptions = [])
     {
-        $payload = array_filter([
+        $items = collect((array) $items)->map(function ($item, $key) {
+            if (is_string($key)) {
+                return ['price' => $key, 'quantity' => $item];
+            }
+
+            $item = is_string($item) ? ['price' => $item] : $item;
+
+            $item['quantity'] = $item['quantity'] ?? 1;
+
+            return $item;
+        })->values()->all();
+
+        return Checkout::create($this, array_merge([
             'allow_promotion_codes' => $this->allowPromotionCodes,
-            'automatic_tax' => $this->automaticTaxPayload(),
-            'discounts' => $this->checkoutDiscounts(),
-            'line_items' => Collection::make((array) $items)->map(function ($item, $key) {
-                if (is_string($key)) {
-                    return ['price' => $key, 'quantity' => $item];
-                }
-
-                $item = is_string($item) ? ['price' => $item] : $item;
-
-                $item['quantity'] = $item['quantity'] ?? 1;
-
-                return $item;
-            })->values()->all(),
-            'tax_id_collection' => [
-                'enabled' => Cashier::$calculatesTaxes ?: $this->collectTaxIds,
-            ],
-        ]);
-
-        return Checkout::create($this, array_merge($payload, $sessionOptions), $customerOptions);
+            'line_items' => $items,
+        ], $sessionOptions), $customerOptions);
     }
 
     /**
@@ -105,10 +107,6 @@ trait PerformsCharges
      */
     public function checkoutCharge($amount, $name, $quantity = 1, array $sessionOptions = [], array $customerOptions = [])
     {
-        if ($this->isAutomaticTaxEnabled()) {
-            throw new LogicException('For now, you cannot use checkout charges in combination automatic tax calculation.');
-        }
-
         return $this->checkout([[
             'price_data' => [
                 'currency' => $this->preferredCurrency(),
@@ -119,5 +117,17 @@ trait PerformsCharges
             ],
             'quantity' => $quantity,
         ]], $sessionOptions, $customerOptions);
+    }
+
+    /**
+     * Enables user redeemable promotion codes.
+     *
+     * @return $this
+     */
+    public function allowPromotionCodes()
+    {
+        $this->allowPromotionCodes = true;
+
+        return $this;
     }
 }

@@ -6,10 +6,11 @@ use Illuminate\Support\Collection;
 use Laravel\Cashier\Exceptions\InvalidInvoice;
 use Laravel\Cashier\Invoice;
 use Laravel\Cashier\Payment;
-use LogicException;
 use Stripe\Exception\CardException as StripeCardException;
 use Stripe\Exception\InvalidRequestException as StripeInvalidRequestException;
 use Stripe\Invoice as StripeInvoice;
+use Stripe\InvoiceItem as StripeInvoiceItem;
+use Stripe\PaymentIntent as StripePaymentIntent;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -25,10 +26,6 @@ trait ManagesInvoices
      */
     public function tab($description, $amount, array $options = [])
     {
-        if ($this->isAutomaticTaxEnabled()) {
-            throw new LogicException('For now, you cannot add invoice items in combination automatic tax calculation.');
-        }
-
         $this->assertCustomerExists();
 
         $options = array_merge([
@@ -43,7 +40,7 @@ trait ManagesInvoices
             $options['amount'] = $amount;
         }
 
-        return $this->stripe()->invoiceItems->create($options);
+        return StripeInvoiceItem::create($options, $this->stripeOptions());
     }
 
     /**
@@ -55,50 +52,12 @@ trait ManagesInvoices
      * @param  array  $invoiceOptions
      * @return \Laravel\Cashier\Invoice|bool
      *
-     * @throws \Laravel\Cashier\Exceptions\IncompletePayment
+     * @throws \Laravel\Cashier\Exceptions\PaymentActionRequired
+     * @throws \Laravel\Cashier\Exceptions\PaymentFailure
      */
     public function invoiceFor($description, $amount, array $tabOptions = [], array $invoiceOptions = [])
     {
         $this->tab($description, $amount, $tabOptions);
-
-        return $this->invoice($invoiceOptions);
-    }
-
-    /**
-     * Add an invoice item for a specific Price ID to the customer's upcoming invoice.
-     *
-     * @param  string  $price
-     * @param  int  $quantity
-     * @param  array  $options
-     * @return \Stripe\InvoiceItem
-     */
-    public function tabPrice($price, $quantity = 1, array $options = [])
-    {
-        $this->assertCustomerExists();
-
-        $options = array_merge([
-            'customer' => $this->stripe_id,
-            'price' => $price,
-            'quantity' => $quantity,
-        ], $options);
-
-        return $this->stripe()->invoiceItems->create($options);
-    }
-
-    /**
-     * Invoice the customer for the given Price ID and generate an invoice immediately.
-     *
-     * @param  string  $price
-     * @param  int  $quantity
-     * @param  array  $tabOptions
-     * @param  array  $invoiceOptions
-     * @return \Laravel\Cashier\Invoice|bool
-     *
-     * @throws \Laravel\Cashier\Exceptions\IncompletePayment
-     */
-    public function invoicePrice($price, $quantity = 1, array $tabOptions = [], array $invoiceOptions = [])
-    {
-        $this->tabPrice($price, $quantity, $tabOptions);
 
         return $this->invoice($invoiceOptions);
     }
@@ -109,20 +68,18 @@ trait ManagesInvoices
      * @param  array  $options
      * @return \Laravel\Cashier\Invoice|bool
      *
-     * @throws \Laravel\Cashier\Exceptions\IncompletePayment
+     * @throws \Laravel\Cashier\Exceptions\PaymentActionRequired
+     * @throws \Laravel\Cashier\Exceptions\PaymentFailure
      */
     public function invoice(array $options = [])
     {
         $this->assertCustomerExists();
 
-        $parameters = array_merge([
-            'automatic_tax' => $this->automaticTaxPayload(),
-            'customer' => $this->stripe_id,
-        ], $options);
+        $parameters = array_merge($options, ['customer' => $this->stripe_id]);
 
         try {
             /** @var \Stripe\Invoice $invoice */
-            $stripeInvoice = $this->stripe()->invoices->create($parameters);
+            $stripeInvoice = StripeInvoice::create($parameters, $this->stripeOptions());
 
             if ($stripeInvoice->collection_method === StripeInvoice::COLLECTION_METHOD_CHARGE_AUTOMATICALLY) {
                 $stripeInvoice = $stripeInvoice->pay();
@@ -135,9 +92,9 @@ trait ManagesInvoices
             return false;
         } catch (StripeCardException $exception) {
             $payment = new Payment(
-                $this->stripe()->paymentIntents->retrieve(
-                    $stripeInvoice->refresh()->payment_intent,
-                    ['expand' => ['invoice.subscription']]
+                StripePaymentIntent::retrieve(
+                    ['id' => $stripeInvoice->refresh()->payment_intent, 'expand' => ['invoice.subscription']],
+                    $this->stripeOptions()
                 )
             );
 
@@ -148,22 +105,16 @@ trait ManagesInvoices
     /**
      * Get the customer's upcoming invoice.
      *
-     * @param  array  $options
      * @return \Laravel\Cashier\Invoice|null
      */
-    public function upcomingInvoice(array $options = [])
+    public function upcomingInvoice()
     {
         if (! $this->hasStripeId()) {
             return;
         }
 
-        $parameters = array_merge([
-            'automatic_tax' => $this->automaticTaxPayload(),
-            'customer' => $this->stripe_id,
-        ], $options);
-
         try {
-            $stripeInvoice = $this->stripe()->invoices->upcoming($parameters);
+            $stripeInvoice = StripeInvoice::upcoming(['customer' => $this->stripe_id], $this->stripeOptions());
 
             return new Invoice($this, $stripeInvoice);
         } catch (StripeInvalidRequestException $exception) {
@@ -182,7 +133,9 @@ trait ManagesInvoices
         $stripeInvoice = null;
 
         try {
-            $stripeInvoice = $this->stripe()->invoices->retrieve($id);
+            $stripeInvoice = StripeInvoice::retrieve(
+                $id, $this->stripeOptions()
+            );
         } catch (StripeInvalidRequestException $exception) {
             //
         }
@@ -239,15 +192,16 @@ trait ManagesInvoices
     public function invoices($includePending = false, $parameters = [])
     {
         if (! $this->hasStripeId()) {
-            return new Collection();
+            return collect();
         }
 
         $invoices = [];
 
         $parameters = array_merge(['limit' => 24], $parameters);
 
-        $stripeInvoices = $this->stripe()->invoices->all(
-            ['customer' => $this->stripe_id] + $parameters
+        $stripeInvoices = StripeInvoice::all(
+            ['customer' => $this->stripe_id] + $parameters,
+            $this->stripeOptions()
         );
 
         // Here we will loop through the Stripe invoices and create our own custom Invoice

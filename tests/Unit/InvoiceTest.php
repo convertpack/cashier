@@ -201,7 +201,7 @@ class InvoiceTest extends TestCase
         $stripeInvoice = new StripeInvoice();
         $stripeInvoice->total_discount_amounts = [$discountAmount];
         $stripeInvoice->customer = 'foo';
-        $stripeInvoice->discounts = [$discount];
+        $stripeInvoice->discount = $discount;
 
         $user = new User();
         $user->stripe_id = 'foo';

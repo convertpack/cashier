@@ -5,8 +5,8 @@ namespace Laravel\Cashier;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Jsonable;
 use JsonSerializable;
-use Laravel\Cashier\Exceptions\IncompletePayment;
-use Stripe\PaymentIntent;
+use Laravel\Cashier\Exceptions\PaymentActionRequired;
+use Laravel\Cashier\Exceptions\PaymentFailure;
 use Stripe\PaymentIntent as StripePaymentIntent;
 
 class Payment implements Arrayable, Jsonable, JsonSerializable
@@ -17,13 +17,6 @@ class Payment implements Arrayable, Jsonable, JsonSerializable
      * @var \Stripe\PaymentIntent
      */
     protected $paymentIntent;
-
-    /**
-     * The related customer instance.
-     *
-     * @var \Laravel\Cashier\Billable
-     */
-    protected $customer;
 
     /**
      * Create a new Payment instance.
@@ -74,7 +67,7 @@ class Payment implements Arrayable, Jsonable, JsonSerializable
      */
     public function capture(array $options = [])
     {
-        return $this->paymentIntent->capture($options);
+        return $this->paymentIntent->capture($options, Cashier::stripeOptions());
     }
 
     /**
@@ -152,47 +145,25 @@ class Payment implements Arrayable, Jsonable, JsonSerializable
      *
      * @return void
      *
-     * @throws \Laravel\Cashier\Exceptions\IncompletePayment
+     * @throws \Laravel\Cashier\Exceptions\PaymentActionRequired
+     * @throws \Laravel\Cashier\Exceptions\PaymentFailure
      */
     public function validate()
     {
         if ($this->requiresPaymentMethod()) {
-            throw IncompletePayment::paymentMethodRequired($this);
+            throw PaymentFailure::invalidPaymentMethod($this);
         } elseif ($this->requiresAction()) {
-            throw IncompletePayment::requiresAction($this);
-        } elseif ($this->requiresConfirmation()) {
-            throw IncompletePayment::requiresConfirmation($this);
+            throw PaymentActionRequired::incomplete($this);
         }
-    }
-
-    /**
-     * Retrieve the related customer for the payment intent if one exists.
-     *
-     * @return \Laravel\Cashier\Billable|null
-     */
-    public function customer()
-    {
-        if ($this->customer) {
-            return $this->customer;
-        }
-
-        return $this->customer = Cashier::findBillable($this->paymentIntent->customer);
     }
 
     /**
      * The Stripe PaymentIntent instance.
      *
-     * @param  array  $expand
      * @return \Stripe\PaymentIntent
      */
-    public function asStripePaymentIntent(array $expand = [])
+    public function asStripePaymentIntent()
     {
-        if ($expand) {
-            return $this->paymentIntent->retrieve(
-                $this->paymentIntent->id, ['expand' => $expand]
-            );
-        }
-
         return $this->paymentIntent;
     }
 
@@ -228,7 +199,7 @@ class Payment implements Arrayable, Jsonable, JsonSerializable
     }
 
     /**
-     * Dynamically get values from the Stripe object.
+     * Dynamically get values from the Stripe PaymentIntent.
      *
      * @param  string  $key
      * @return mixed

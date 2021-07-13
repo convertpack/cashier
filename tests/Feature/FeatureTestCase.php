@@ -2,27 +2,51 @@
 
 namespace Laravel\Cashier\Tests\Feature;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Laravel\Cashier\Cashier;
+use Illuminate\Database\Eloquent\Model as Eloquent;
 use Laravel\Cashier\Tests\Fixtures\User;
 use Laravel\Cashier\Tests\TestCase;
-use Stripe\StripeClient;
+use Stripe\ApiResource;
+use Stripe\Exception\InvalidRequestException;
+use Stripe\Stripe;
 
 abstract class FeatureTestCase extends TestCase
 {
-    use RefreshDatabase;
+    /**
+     * @var string
+     */
+    protected static $stripePrefix = 'cashier-test-';
 
-    protected function defineDatabaseMigrations()
+    public static function setUpBeforeClass(): void
     {
+        parent::setUpBeforeClass();
+
+        Stripe::setApiKey(getenv('STRIPE_SECRET'));
+    }
+
+    protected function setUp(): void
+    {
+        // Delay consecutive tests to prevent Stripe rate limiting issues.
+        sleep(2);
+
+        parent::setUp();
+
+        Eloquent::unguard();
+
         $this->loadLaravelMigrations();
+
+        $this->artisan('migrate')->run();
     }
 
-    protected static function stripe(array $options = []): StripeClient
+    protected static function deleteStripeResource(ApiResource $resource)
     {
-        return Cashier::stripe(array_merge(['api_key' => getenv('STRIPE_SECRET')], $options));
+        try {
+            $resource->delete();
+        } catch (InvalidRequestException $e) {
+            //
+        }
     }
 
-    protected function createCustomer($description = 'taylor', array $options = []): User
+    protected function createCustomer($description = 'taylor', $options = []): User
     {
         return User::create(array_merge([
             'email' => "{$description}@cashier-test.com",

@@ -4,13 +4,11 @@ namespace Laravel\Cashier;
 
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Jsonable;
-use Illuminate\Contracts\Support\Responsable;
-use Illuminate\Support\Facades\Redirect;
 use Illuminate\Support\Facades\View;
 use JsonSerializable;
 use Stripe\Checkout\Session;
 
-class Checkout implements Arrayable, Jsonable, JsonSerializable, Responsable
+class Checkout implements Arrayable, Jsonable, JsonSerializable
 {
     /**
      * The Stripe model instance.
@@ -51,13 +49,13 @@ class Checkout implements Arrayable, Jsonable, JsonSerializable, Responsable
     {
         $customer = $owner->createOrGetStripeCustomer($customerOptions);
 
-        $session = $owner->stripe()->checkout->sessions->create(array_merge([
+        $session = Session::create(array_merge([
             'customer' => $customer->id,
             'mode' => 'payment',
             'success_url' => $sessionOptions['success_url'] ?? route('home').'?checkout=success',
             'cancel_url' => $sessionOptions['cancel_url'] ?? route('home').'?checkout=cancelled',
             'payment_method_types' => ['card'],
-        ], $sessionOptions));
+        ], $sessionOptions), Cashier::stripeOptions());
 
         return new static($owner, $session);
     }
@@ -68,8 +66,6 @@ class Checkout implements Arrayable, Jsonable, JsonSerializable, Responsable
      * @param  string  $label
      * @param  array  $options
      * @return \Illuminate\Contracts\View\View
-     *
-     * @deprecated Use the redirect method instead.
      */
     public function button($label = 'Check out', array $options = [])
     {
@@ -78,27 +74,6 @@ class Checkout implements Arrayable, Jsonable, JsonSerializable, Responsable
             'sessionId' => $this->session->id,
             'stripeKey' => config('cashier.key'),
         ], $options));
-    }
-
-    /**
-     * Redirect to the checkout session.
-     *
-     * @return \Illuminate\Http\RedirectResponse
-     */
-    public function redirect()
-    {
-        return Redirect::to($this->session->url, 303);
-    }
-
-    /**
-     * Create an HTTP response that represents the object.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     * @return \Symfony\Component\HttpFoundation\Response
-     */
-    public function toResponse($request)
-    {
-        return $this->redirect();
     }
 
     /**
@@ -143,7 +118,7 @@ class Checkout implements Arrayable, Jsonable, JsonSerializable, Responsable
     }
 
     /**
-     * Dynamically get values from the Stripe object.
+     * Dynamically get values from the Stripe Checkout Session.
      *
      * @param  string  $key
      * @return mixed

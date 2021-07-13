@@ -30,7 +30,7 @@
             vertical-align: bottom;
             font-weight: bold;
             padding: 8px;
-            line-height: 14px;
+            line-height: 20px;
             text-align: left;
             border-bottom: 1px solid #ddd;
         }
@@ -41,14 +41,13 @@
 
         .table td {
             padding: 8px;
-            line-height: 14px;
+            line-height: 20px;
             text-align: left;
             vertical-align: top;
         }
     </style>
 </head>
 <body>
-
 <div class="container">
     <table style="margin-left: auto; margin-right: auto;" width="550">
         <tr>
@@ -56,111 +55,55 @@
                 &nbsp;
             </td>
 
-            <!-- Account Name / Header Image -->
+            <!-- Vendor Name / Image -->
             <td align="right">
-                <strong>{{ $header ?? $vendor ?? $invoice->account_name }}</strong>
+                <strong>{{ $header ?? $vendor }}</strong>
             </td>
         </tr>
         <tr valign="top">
-            <td style="font-size:9px;">
-                <span style="font-size: 28px; color: #ccc;">
-                    Receipt
-                </span><br><br>
+            <td style="font-size: 28px; color: #ccc;">
+                Receipt
+            </td>
 
-                <!-- Account Details -->
-                {{ $vendor ?? $invoice->account_name }}<br>
-
-                @isset($street)
-                    {{ $street }}<br>
-                @endisset
-
-                @isset($location)
-                    {{ $location }}<br>
-                @endisset
-
-                @isset($phone)
-                    {{ $phone }}<br>
-                @endisset
-
-                @isset($email)
-                    {{ $email }}<br>
-                @endisset
-
-                @isset($url)
-                    <a href="{{ $url }}">{{ $url }}</a><br>
-                @endisset
-
-                @isset($vendorVat)
-                    {{ $vendorVat }}<br>
-                @else
-                    @foreach ($invoice->accountTaxIds() as $taxId)
-                        {{ $taxId->value }}<br>
-                    @endforeach
-                @endisset
-
+            <!-- Customer Name / Invoice Date -->
+            <td>
                 <br><br>
+                <strong>To:</strong> {{ $owner->stripeEmail() ?: $owner->name }}
+                <br>
+                <strong>Date:</strong> {{ $invoice->date()->toFormattedDateString() }}
+            </td>
+        </tr>
+        <tr valign="top">
+            <!-- Vendor Details -->
+            <td style="font-size:9px;">
+                {{ $vendor }}<br>
 
-                <!-- Customer Details -->
-                <strong>Bill to:</strong><br>
-
-                {{ $invoice->customer_name ?? $invoice->customer_email }}<br>
-
-                @if ($address = $invoice->customer_address)
-                    @if ($address->line1)
-                        {{ $address->line1 }}<br>
-                    @endif
-
-                    @if ($address->line2)
-                        {{ $address->line2 }}<br>
-                    @endif
-
-                    @if ($address->city)
-                        {{ $address->city }}<br>
-                    @endif
-
-                    @if ($address->state || $address->postal_code)
-                        {{ implode(' ', [$address->state, $address->postal_code]) }}<br>
-                    @endif
-
-                    @if ($address->country)
-                        {{ $address->country }}<br>
-                    @endif
+                @if (isset($street))
+                    {{ $street }}<br>
                 @endif
 
-                @if ($invoice->customer_phone)
-                    {{ $invoice->customer_phone }}<br>
+                @if (isset($location))
+                    {{ $location }}<br>
                 @endif
 
-                @if ($invoice->customer_name)
-                    {{ $invoice->customer_email }}<br>
+                @if (isset($phone))
+                    <strong>T</strong> {{ $phone }}<br>
                 @endif
 
-                @foreach ($invoice->customerTaxIds() as $taxId)
-                    {{ $taxId->value }}<br>
-                @endforeach
+                @if (isset($vendorVat))
+                    {{ $vendorVat }}<br>
+                @endif
+
+                @if (isset($url))
+                    <a href="{{ $url }}">{{ $url }}</a>
+                @endif
             </td>
             <td>
                 <!-- Invoice Info -->
                 <p>
-                    @isset ($product)
-                        <strong>Product:</strong> {{ $product }}<br>
-                    @endisset
-
-                    <strong>Date:</strong> {{ $invoice->date()->toFormattedDateString() }}<br>
-
-                    @if ($dueDate = $invoice->dueDate())
-                        <strong>Due date:</strong> {{ $dueDate->toFormattedDateString() }}<br>
-                    @endif
-
+                    <strong>Product:</strong> {{ $product }}<br>
                     <strong>Invoice Number:</strong> {{ $id ?? $invoice->number }}<br>
                 </p>
-
-                <!-- Memo / Description -->
-                @if ($invoice->description)
-                    <p>
-                        {{ $invoice->description }}
-                    </p>
-                @endif
 
                 <!-- Extra / VAT Information -->
                 @if (isset($vat))
@@ -248,21 +191,17 @@
 
                     <!-- Display The Discount -->
                     @if ($invoice->hasDiscount())
-                        @foreach ($invoice->discounts() as $discount)
-                            @php($coupon = $discount->coupon())
+                        <tr>
+                            <td colspan="{{ $invoice->hasTax() ? 3 : 2 }}" style="text-align: right;">
+                                @if ($invoice->discountIsPercentage())
+                                    {{ $invoice->couponName() }} ({{ $invoice->percentOff() }}% Off)
+                                @else
+                                    {{ $invoice->couponName() }} ({{ $invoice->amountOff() }} Off)
+                                @endif
+                            </td>
 
-                            <tr>
-                                <td colspan="{{ $invoice->hasTax() ? 3 : 2 }}" style="text-align: right;">
-                                    @if ($coupon->isPercentage())
-                                        {{ $coupon->name() }} ({{ $coupon->percentOff() }}% Off)
-                                    @else
-                                        {{ $coupon->name() }} ({{ $coupon->amountOff() }} Off)
-                                    @endif
-                                </td>
-
-                                <td>-{{ $invoice->discountFor($discount) }}</td>
-                            </tr>
-                        @endforeach
+                            <td>-{{ $invoice->discount() }}</td>
+                        </tr>
                     @endif
 
                     <!-- Display The Taxes -->
@@ -313,6 +252,5 @@
         </tr>
     </table>
 </div>
-
 </body>
 </html>

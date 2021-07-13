@@ -83,8 +83,6 @@ class LoggerTest extends TestCase
 
     protected function getEnvironmentSetUp($app)
     {
-        parent::getEnvironmentSetUp($app);
-
         $app['config']->set('cashier.logger', $this->channel);
     }
 }

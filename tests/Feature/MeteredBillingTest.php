@@ -3,8 +3,12 @@
 namespace Laravel\Cashier\Tests\Feature;
 
 use Exception;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Stripe\Exception\InvalidRequestException;
+use Stripe\Plan;
+use Stripe\Price;
+use Stripe\Product;
 
 class MeteredBillingTest extends FeatureTestCase
 {
@@ -32,13 +36,15 @@ class MeteredBillingTest extends FeatureTestCase
     {
         parent::setUpBeforeClass();
 
-        static::$productId = self::stripe()->products->create([
+        static::$productId = static::$stripePrefix.'product-1'.Str::random(10);
+
+        Product::create([
+            'id' => static::$productId,
             'name' => 'Laravel Cashier Test Product',
             'type' => 'service',
-        ])->id;
+        ]);
 
-        static::$meteredPrice = self::stripe()->prices->create([
-            'product' => static::$productId,
+        static::$meteredPrice = Price::create([
             'nickname' => 'Monthly Metered $1 per unit',
             'currency' => 'USD',
             'recurring' => [
@@ -46,10 +52,10 @@ class MeteredBillingTest extends FeatureTestCase
                 'usage_type' => 'metered',
             ],
             'unit_amount' => 100,
+            'product' => static::$productId,
         ])->id;
 
-        static::$otherMeteredPrice = self::stripe()->prices->create([
-            'product' => static::$productId,
+        static::$otherMeteredPrice = Price::create([
             'nickname' => 'Monthly Metered $2 per unit',
             'currency' => 'USD',
             'recurring' => [
@@ -57,28 +63,37 @@ class MeteredBillingTest extends FeatureTestCase
                 'usage_type' => 'metered',
             ],
             'unit_amount' => 200,
+            'product' => static::$productId,
         ])->id;
 
-        static::$licensedPrice = self::stripe()->prices->create([
-            'product' => static::$productId,
+        static::$licensedPrice = Price::create([
             'nickname' => 'Monthly $10 Licensed',
             'currency' => 'USD',
             'recurring' => [
                 'interval' => 'month',
             ],
             'unit_amount' => 1000,
+            'product' => static::$productId,
         ])->id;
+    }
+
+    public static function tearDownAfterClass(): void
+    {
+        parent::tearDownAfterClass();
+
+        static::deleteStripeResource(new Plan(static::$meteredPrice));
+        static::deleteStripeResource(new Plan(static::$otherMeteredPrice));
+        static::deleteStripeResource(new Plan(static::$licensedPrice));
+        static::deleteStripeResource(new Product(static::$productId));
     }
 
     public function test_report_usage_for_metered_price()
     {
         $user = $this->createCustomer('report_usage_for_metered_price');
 
-        $subscription = $user->newSubscription('main')
-            ->meteredPrice(static::$meteredPrice)
+        $subscription = $user->newSubscription('main', [])
+            ->meteredPlan(static::$meteredPrice)
             ->create('pm_card_visa');
-
-        sleep(1);
 
         $subscription->reportUsage(5);
 
@@ -102,13 +117,13 @@ class MeteredBillingTest extends FeatureTestCase
         }
     }
 
-    public function test_reporting_usage_for_multiprice_subscriptions()
+    public function test_reporting_usage_for_multi_plan_subscriptions()
     {
-        $user = $this->createCustomer('reporting_usage_for_multiprice_subscriptions');
+        $user = $this->createCustomer('reporting_usage_for_multi_plan_subscriptions');
 
         $subscription = $user->newSubscription('main', [static::$licensedPrice])
-            ->meteredPrice(static::$meteredPrice)
-            ->meteredPrice(static::$otherMeteredPrice)
+            ->meteredPlan(static::$meteredPrice)
+            ->meteredPlan(static::$otherMeteredPrice)
             ->create('pm_card_visa');
 
         $this->assertSame($subscription->items->count(), 3);
@@ -119,7 +134,7 @@ class MeteredBillingTest extends FeatureTestCase
             $this->assertInstanceOf(InvalidArgumentException::class, $e);
 
             $this->assertSame(
-                'This method requires a price argument since the subscription has multiple prices.', $e->getMessage()
+                'This method requires a plan argument since the subscription has multiple plans.', $e->getMessage()
             );
         }
 
@@ -140,33 +155,33 @@ class MeteredBillingTest extends FeatureTestCase
     {
         $user = $this->createCustomer('swap_metered_price_to_different_price');
 
-        $subscription = $user->newSubscription('main')
-            ->meteredPrice(static::$meteredPrice)
+        $subscription = $user->newSubscription('main', [])
+            ->meteredPlan(static::$meteredPrice)
             ->create('pm_card_visa');
 
-        $this->assertSame(static::$meteredPrice, $subscription->stripe_price);
+        $this->assertSame(static::$meteredPrice, $subscription->stripe_plan);
         $this->assertNull($subscription->quantity);
 
         $subscription = $subscription->swap(static::$otherMeteredPrice);
 
-        $this->assertSame(static::$otherMeteredPrice, $subscription->stripe_price);
+        $this->assertSame(static::$otherMeteredPrice, $subscription->stripe_plan);
         $this->assertNull($subscription->quantity);
 
         $subscription = $subscription->swap(static::$licensedPrice);
 
-        $this->assertSame(static::$licensedPrice, $subscription->stripe_price);
+        $this->assertSame(static::$licensedPrice, $subscription->stripe_plan);
         $this->assertSame(1, $subscription->quantity);
     }
 
-    public function test_swap_metered_price_to_different_price_with_a_multiprice_subscription()
+    public function test_swap_metered_price_to_different_price_with_a_multi_plan_subscription()
     {
-        $user = $this->createCustomer('swap_metered_price_to_different_price_with_a_multiprice_subscription');
+        $user = $this->createCustomer('swap_metered_price_to_different_price_with_a_multi_plan_subscription');
 
-        $subscription = $user->newSubscription('main')
-            ->meteredPrice(static::$meteredPrice)
+        $subscription = $user->newSubscription('main', [])
+            ->meteredPlan(static::$meteredPrice)
             ->create('pm_card_visa');
 
-        $this->assertSame(static::$meteredPrice, $subscription->stripe_price);
+        $this->assertSame(static::$meteredPrice, $subscription->stripe_plan);
         $this->assertNull($subscription->quantity);
 
         $subscription = $subscription->swap([static::$meteredPrice, static::$otherMeteredPrice]);
@@ -175,50 +190,29 @@ class MeteredBillingTest extends FeatureTestCase
         $otherItem = $subscription->findItemOrFail(self::$otherMeteredPrice);
 
         $this->assertCount(2, $subscription->items);
-        $this->assertNull($subscription->stripe_price);
+        $this->assertNull($subscription->stripe_plan);
         $this->assertNull($subscription->quantity);
-        $this->assertSame(self::$meteredPrice, $item->stripe_price);
+        $this->assertSame(self::$meteredPrice, $item->stripe_plan);
         $this->assertNull($item->quantity);
-        $this->assertSame(self::$otherMeteredPrice, $otherItem->stripe_price);
+        $this->assertSame(self::$otherMeteredPrice, $otherItem->stripe_plan);
         $this->assertNull($otherItem->quantity);
 
         $subscription = $subscription->swap(static::$otherMeteredPrice);
 
         $this->assertCount(1, $subscription->items);
-        $this->assertSame(self::$otherMeteredPrice, $subscription->stripe_price);
+        $this->assertSame(self::$otherMeteredPrice, $subscription->stripe_plan);
         $this->assertNull($subscription->quantity);
 
         $subscription = $subscription->swap(static::$licensedPrice);
 
         $this->assertCount(1, $subscription->items);
-        $this->assertSame(self::$licensedPrice, $subscription->stripe_price);
+        $this->assertSame(self::$licensedPrice, $subscription->stripe_plan);
         $this->assertSame(1, $subscription->quantity);
 
         $subscription = $subscription->swap([static::$licensedPrice, static::$meteredPrice]);
 
         $this->assertCount(2, $subscription->items);
-        $this->assertNull($subscription->stripe_price);
-        $this->assertNull($subscription->quantity);
-    }
-
-    public function test_add_metered_price_to_a_multiprice_subscription()
-    {
-        $user = $this->createCustomer('add_metered_price_to_a_multiprice_subscription');
-
-        $subscription = $user->newSubscription('main')
-            ->meteredPrice(static::$meteredPrice)
-            ->create('pm_card_visa');
-
-        $this->assertSame(static::$meteredPrice, $subscription->stripe_price);
-        $this->assertNull($subscription->quantity);
-
-        $subscription = $subscription->addMeteredPrice(static::$otherMeteredPrice);
-
-        $subscription->findItemOrFail(self::$meteredPrice);
-        $subscription->findItemOrFail(self::$otherMeteredPrice);
-
-        $this->assertCount(2, $subscription->items);
-        $this->assertNull($subscription->stripe_price);
+        $this->assertNull($subscription->stripe_plan);
         $this->assertNull($subscription->quantity);
     }
 
@@ -226,8 +220,8 @@ class MeteredBillingTest extends FeatureTestCase
     {
         $user = $this->createCustomer('cancel_metered_subscription');
 
-        $subscription = $user->newSubscription('main')
-            ->meteredPrice(static::$meteredPrice)
+        $subscription = $user->newSubscription('main', [])
+            ->meteredPlan(static::$meteredPrice)
             ->create('pm_card_visa');
 
         $subscription->reportUsage(10);
@@ -243,8 +237,8 @@ class MeteredBillingTest extends FeatureTestCase
     {
         $user = $this->createCustomer('cancel_metered_subscription_immediately');
 
-        $subscription = $user->newSubscription('main')
-            ->meteredPrice(static::$meteredPrice)
+        $subscription = $user->newSubscription('main', [])
+            ->meteredPlan(static::$meteredPrice)
             ->create('pm_card_visa');
 
         $subscription->reportUsage(10);

@@ -4,9 +4,12 @@ namespace Laravel\Cashier\Tests\Feature;
 
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Notification;
-use Laravel\Cashier\Exceptions\IncompletePayment;
+use Illuminate\Support\Str;
+use Laravel\Cashier\Exceptions\PaymentActionRequired;
 use Laravel\Cashier\Notifications\ConfirmPayment;
-use Stripe\Subscription as StripeSubscription;
+use Stripe\Plan;
+use Stripe\Product;
+use Stripe\Subscription;
 
 class WebhooksTest extends FeatureTestCase
 {
@@ -18,32 +21,43 @@ class WebhooksTest extends FeatureTestCase
     /**
      * @var string
      */
-    protected static $priceId;
+    protected static $planId;
 
     public static function setUpBeforeClass(): void
     {
         parent::setUpBeforeClass();
 
-        static::$productId = self::stripe()->products->create([
+        static::$productId = static::$stripePrefix.'product-1'.Str::random(10);
+        static::$planId = static::$stripePrefix.'monthly-10-'.Str::random(10);
+
+        Product::create([
+            'id' => static::$productId,
             'name' => 'Laravel Cashier Test Product',
             'type' => 'service',
-        ])->id;
+        ]);
 
-        static::$priceId = self::stripe()->prices->create([
-            'product' => static::$productId,
+        Plan::create([
+            'id' => static::$planId,
             'nickname' => 'Monthly $10',
             'currency' => 'USD',
-            'recurring' => [
-                'interval' => 'month',
-            ],
+            'interval' => 'month',
             'billing_scheme' => 'per_unit',
-            'unit_amount' => 1000,
-        ])->id;
+            'amount' => 1000,
+            'product' => static::$productId,
+        ]);
+    }
+
+    public static function tearDownAfterClass(): void
+    {
+        parent::tearDownAfterClass();
+
+        static::deleteStripeResource(new Plan(static::$planId));
+        static::deleteStripeResource(new Product(static::$productId));
     }
 
     public function test_subscriptions_are_created()
     {
-        $user = $this->createCustomer('subscriptions_are_created', ['stripe_id' => 'cus_foo']);
+        $user = $this->createCustomer('subscriptions_are_updated', ['stripe_id' => 'cus_foo']);
 
         $this->postJson('stripe/webhook', [
             'id' => 'foo',
@@ -57,7 +71,7 @@ class WebhooksTest extends FeatureTestCase
                     'items' => [
                         'data' => [[
                             'id' => 'bar',
-                            'price' => ['id' => 'price_foo', 'product' => 'prod_bar'],
+                            'plan' => ['id' => 'plan_foo'],
                             'quantity' => 10,
                         ]],
                     ],
@@ -76,8 +90,7 @@ class WebhooksTest extends FeatureTestCase
 
         $this->assertDatabaseHas('subscription_items', [
             'stripe_id' => 'bar',
-            'stripe_product' => 'prod_bar',
-            'stripe_price' => 'price_foo',
+            'stripe_plan' => 'plan_foo',
             'quantity' => 10,
         ]);
     }
@@ -89,14 +102,13 @@ class WebhooksTest extends FeatureTestCase
         $subscription = $user->subscriptions()->create([
             'name' => 'main',
             'stripe_id' => 'sub_foo',
-            'stripe_price' => 'price_foo',
-            'stripe_status' => StripeSubscription::STATUS_ACTIVE,
+            'stripe_plan' => 'plan_foo',
+            'stripe_status' => Subscription::STATUS_ACTIVE,
         ]);
 
         $item = $subscription->items()->create([
             'stripe_id' => 'it_foo',
-            'stripe_product' => 'prod_bar',
-            'stripe_price' => 'price_bar',
+            'stripe_plan' => 'plan_bar',
             'quantity' => 1,
         ]);
 
@@ -111,7 +123,7 @@ class WebhooksTest extends FeatureTestCase
                     'items' => [
                         'data' => [[
                             'id' => 'bar',
-                            'price' => ['id' => 'price_foo', 'product' => 'prod_bar'],
+                            'plan' => ['id' => 'plan_foo'],
                             'quantity' => 5,
                         ]],
                     ],
@@ -129,8 +141,7 @@ class WebhooksTest extends FeatureTestCase
         $this->assertDatabaseHas('subscription_items', [
             'subscription_id' => $subscription->id,
             'stripe_id' => 'bar',
-            'stripe_product' => 'prod_bar',
-            'stripe_price' => 'price_foo',
+            'stripe_plan' => 'plan_foo',
             'quantity' => 5,
         ]);
 
@@ -141,20 +152,19 @@ class WebhooksTest extends FeatureTestCase
 
     public function test_subscriptions_on_update_cancel_at_date_is_correct()
     {
-        $user = $this->createCustomer('subscriptions_on_update_cancel_at_date_is_correct', ['stripe_id' => 'cus_foo']);
+        $user = $this->createCustomer('subscriptions_are_updated', ['stripe_id' => 'cus_foo']);
         $cancelDate = Carbon::now()->addMonths(6);
 
         $subscription = $user->subscriptions()->create([
             'name' => 'main',
             'stripe_id' => 'sub_foo',
-            'stripe_price' => 'price_foo',
-            'stripe_status' => StripeSubscription::STATUS_ACTIVE,
+            'stripe_plan' => 'plan_foo',
+            'stripe_status' => Subscription::STATUS_ACTIVE,
         ]);
 
         $item = $subscription->items()->create([
             'stripe_id' => 'it_foo',
-            'stripe_product' => 'prod_bar',
-            'stripe_price' => 'price_bar',
+            'stripe_plan' => 'plan_bar',
             'quantity' => 1,
         ]);
 
@@ -170,7 +180,7 @@ class WebhooksTest extends FeatureTestCase
                     'items' => [
                         'data' => [[
                             'id' => 'bar',
-                            'price' => ['id' => 'price_foo', 'product' => 'prod_bar'],
+                            'plan' => ['id' => 'plan_foo'],
                             'quantity' => 5,
                         ]],
                     ],
@@ -189,8 +199,7 @@ class WebhooksTest extends FeatureTestCase
         $this->assertDatabaseHas('subscription_items', [
             'subscription_id' => $subscription->id,
             'stripe_id' => 'bar',
-            'stripe_product' => 'prod_bar',
-            'stripe_price' => 'price_foo',
+            'stripe_plan' => 'plan_foo',
             'quantity' => 5,
         ]);
 
@@ -202,7 +211,8 @@ class WebhooksTest extends FeatureTestCase
     public function test_cancelled_subscription_is_properly_reactivated()
     {
         $user = $this->createCustomer('cancelled_subscription_is_properly_reactivated');
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa')->cancel();
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
+        $subscription->cancel();
 
         $this->assertTrue($subscription->cancelled());
 
@@ -217,7 +227,7 @@ class WebhooksTest extends FeatureTestCase
                     'items' => [
                         'data' => [[
                             'id' => $subscription->items()->first()->stripe_id,
-                            'price' => ['id' => static::$priceId, 'product' => static::$productId],
+                            'plan' => ['id' => static::$planId],
                             'quantity' => 1,
                         ]],
                     ],
@@ -231,7 +241,7 @@ class WebhooksTest extends FeatureTestCase
     public function test_subscription_is_marked_as_cancelled_when_deleted_in_stripe()
     {
         $user = $this->createCustomer('subscription_is_marked_as_cancelled_when_deleted_in_stripe');
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         $this->assertFalse($subscription->cancelled());
 
@@ -253,7 +263,7 @@ class WebhooksTest extends FeatureTestCase
     public function test_subscription_is_deleted_when_status_is_incomplete_expired()
     {
         $user = $this->createCustomer('subscription_is_deleted_when_status_is_incomplete_expired');
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         $this->assertCount(1, $user->subscriptions);
 
@@ -264,7 +274,7 @@ class WebhooksTest extends FeatureTestCase
                 'object' => [
                     'id' => $subscription->stripe_id,
                     'customer' => $user->stripe_id,
-                    'status' => StripeSubscription::STATUS_INCOMPLETE_EXPIRED,
+                    'status' => Subscription::STATUS_INCOMPLETE_EXPIRED,
                     'quantity' => 1,
                 ],
             ],
@@ -278,10 +288,10 @@ class WebhooksTest extends FeatureTestCase
         $user = $this->createCustomer('payment_action_required_email_is_sent');
 
         try {
-            $user->newSubscription('main', static::$priceId)->create('pm_card_threeDSecure2Required');
+            $user->newSubscription('main', static::$planId)->create('pm_card_threeDSecure2Required');
 
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $exception) {
+            $this->fail('Expected exception '.PaymentActionRequired::class.' was not thrown.');
+        } catch (PaymentActionRequired $exception) {
             Notification::fake();
 
             $this->postJson('stripe/webhook', [

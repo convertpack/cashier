@@ -4,13 +4,19 @@ namespace Laravel\Cashier\Tests\Feature;
 
 use Carbon\Carbon;
 use DateTime;
+use Illuminate\Support\Str;
 use Laravel\Cashier\Cashier;
-use Laravel\Cashier\Exceptions\IncompletePayment;
+use Laravel\Cashier\Exceptions\PaymentActionRequired;
+use Laravel\Cashier\Exceptions\PaymentFailure;
 use Laravel\Cashier\Payment;
 use Laravel\Cashier\Subscription;
 use Laravel\Cashier\Tests\Fixtures\User;
-use Stripe\Invoice as StripeInvoice;
+use Stripe\Coupon;
+use Stripe\Invoice;
+use Stripe\Plan;
+use Stripe\Product;
 use Stripe\Subscription as StripeSubscription;
+use Stripe\TaxRate;
 
 class SubscriptionsTest extends FeatureTestCase
 {
@@ -22,17 +28,17 @@ class SubscriptionsTest extends FeatureTestCase
     /**
      * @var string
      */
-    protected static $priceId;
+    protected static $planId;
 
     /**
      * @var string
      */
-    protected static $otherPriceId;
+    protected static $otherPlanId;
 
     /**
      * @var string
      */
-    protected static $premiumPriceId;
+    protected static $premiumPlanId;
 
     /**
      * @var string
@@ -48,52 +54,57 @@ class SubscriptionsTest extends FeatureTestCase
     {
         parent::setUpBeforeClass();
 
-        static::$productId = self::stripe()->products->create([
+        static::$productId = static::$stripePrefix.'product-1'.Str::random(10);
+        static::$planId = static::$stripePrefix.'monthly-10-'.Str::random(10);
+        static::$otherPlanId = static::$stripePrefix.'monthly-10-'.Str::random(10);
+        static::$premiumPlanId = static::$stripePrefix.'monthly-20-premium-'.Str::random(10);
+        static::$couponId = static::$stripePrefix.'coupon-'.Str::random(10);
+
+        Product::create([
+            'id' => static::$productId,
             'name' => 'Laravel Cashier Test Product',
             'type' => 'service',
-        ])->id;
+        ]);
 
-        static::$priceId = self::stripe()->prices->create([
-            'product' => static::$productId,
+        Plan::create([
+            'id' => static::$planId,
             'nickname' => 'Monthly $10',
             'currency' => 'USD',
-            'recurring' => [
-                'interval' => 'month',
-            ],
+            'interval' => 'month',
             'billing_scheme' => 'per_unit',
-            'unit_amount' => 1000,
-        ])->id;
-
-        static::$otherPriceId = self::stripe()->prices->create([
+            'amount' => 1000,
             'product' => static::$productId,
+        ]);
+
+        Plan::create([
+            'id' => static::$otherPlanId,
             'nickname' => 'Monthly $10 Other',
             'currency' => 'USD',
-            'recurring' => [
-                'interval' => 'month',
-            ],
+            'interval' => 'month',
             'billing_scheme' => 'per_unit',
-            'unit_amount' => 1000,
-        ])->id;
-
-        static::$premiumPriceId = self::stripe()->prices->create([
+            'amount' => 1000,
             'product' => static::$productId,
+        ]);
+
+        Plan::create([
+            'id' => static::$premiumPlanId,
             'nickname' => 'Monthly $20 Premium',
             'currency' => 'USD',
-            'recurring' => [
-                'interval' => 'month',
-            ],
+            'interval' => 'month',
             'billing_scheme' => 'per_unit',
-            'unit_amount' => 2000,
-        ])->id;
+            'amount' => 2000,
+            'product' => static::$productId,
+        ]);
 
-        static::$couponId = self::stripe()->coupons->create([
+        Coupon::create([
+            'id' => static::$couponId,
             'duration' => 'repeating',
             'amount_off' => 500,
             'duration_in_months' => 3,
             'currency' => 'USD',
-        ])->id;
+        ]);
 
-        static::$taxRateId = self::stripe()->taxRates->create([
+        static::$taxRateId = TaxRate::create([
             'display_name' => 'VAT',
             'description' => 'VAT Belgium',
             'jurisdiction' => 'BE',
@@ -102,12 +113,23 @@ class SubscriptionsTest extends FeatureTestCase
         ])->id;
     }
 
+    public static function tearDownAfterClass(): void
+    {
+        parent::tearDownAfterClass();
+
+        static::deleteStripeResource(new Plan(static::$planId));
+        static::deleteStripeResource(new Plan(static::$otherPlanId));
+        static::deleteStripeResource(new Plan(static::$premiumPlanId));
+        static::deleteStripeResource(new Product(static::$productId));
+        static::deleteStripeResource(new Coupon(static::$couponId));
+    }
+
     public function test_subscriptions_can_be_created()
     {
         $user = $this->createCustomer('subscriptions_can_be_created');
 
         // Create Subscription
-        $user->newSubscription('main', static::$priceId)
+        $user->newSubscription('main', static::$planId)
             ->withMetadata($metadata = ['order_id' => '8'])
             ->create('pm_card_visa');
 
@@ -116,12 +138,11 @@ class SubscriptionsTest extends FeatureTestCase
         $this->assertSame($metadata, $subscription->asStripeSubscription()->metadata->toArray());
 
         $this->assertTrue($user->subscribed('main'));
-        $this->assertTrue($user->subscribedToProduct(static::$productId, 'main'));
-        $this->assertTrue($user->subscribedToPrice(static::$priceId, 'main'));
-        $this->assertFalse($user->subscribedToPrice(static::$priceId, 'something'));
-        $this->assertFalse($user->subscribedToPrice(static::$otherPriceId, 'main'));
-        $this->assertTrue($user->subscribed('main', static::$priceId));
-        $this->assertFalse($user->subscribed('main', static::$otherPriceId));
+        $this->assertTrue($user->subscribedToPlan(static::$planId, 'main'));
+        $this->assertFalse($user->subscribedToPlan(static::$planId, 'something'));
+        $this->assertFalse($user->subscribedToPlan(static::$otherPlanId, 'main'));
+        $this->assertTrue($user->subscribed('main', static::$planId));
+        $this->assertFalse($user->subscribed('main', static::$otherPlanId));
         $this->assertTrue($user->subscription('main')->active());
         $this->assertFalse($user->subscription('main')->cancelled());
         $this->assertFalse($user->subscription('main')->onGracePeriod());
@@ -168,10 +189,10 @@ class SubscriptionsTest extends FeatureTestCase
 
         $this->assertEquals(1, $subscription->quantity);
 
-        // Swap Price and invoice immediately.
-        $subscription->swapAndInvoice(static::$otherPriceId);
+        // Swap Plan and invoice immediately.
+        $subscription->swapAndInvoice(static::$otherPlanId);
 
-        $this->assertEquals(static::$otherPriceId, $subscription->stripe_price);
+        $this->assertEquals(static::$otherPlanId, $subscription->stripe_plan);
 
         // Invoice Tests
         $invoice = $user->invoices()[1];
@@ -179,17 +200,17 @@ class SubscriptionsTest extends FeatureTestCase
         $this->assertEquals('$10.00', $invoice->total());
         $this->assertFalse($invoice->hasDiscount());
         $this->assertFalse($invoice->hasStartingBalance());
-        $this->assertEmpty($invoice->discounts());
+        $this->assertNull($invoice->coupon());
         $this->assertInstanceOf(Carbon::class, $invoice->date());
     }
 
     public function test_swapping_subscription_with_coupon()
     {
         $user = $this->createCustomer('swapping_subscription_with_coupon');
-        $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $user->newSubscription('main', static::$planId)->create('pm_card_visa');
         $subscription = $user->subscription('main');
 
-        $subscription->swap(static::$otherPriceId, [
+        $subscription->swap(static::$otherPlanId, [
             'coupon' => static::$couponId,
         ]);
 
@@ -199,11 +220,11 @@ class SubscriptionsTest extends FeatureTestCase
     public function test_swapping_subscription_and_preserving_quantity()
     {
         $user = $this->createCustomer('swapping_subscription_and_preserving_quantity');
-        $subscription = $user->newSubscription('main', static::$priceId)
-            ->quantity(5, static::$priceId)
+        $subscription = $user->newSubscription('main', static::$planId)
+            ->quantity(5, static::$planId)
             ->create('pm_card_visa');
 
-        $subscription = $subscription->swap(static::$otherPriceId);
+        $subscription = $subscription->swap(static::$otherPlanId);
 
         $this->assertSame(5, $subscription->quantity);
         $this->assertSame(5, $subscription->asStripeSubscription()->quantity);
@@ -212,70 +233,14 @@ class SubscriptionsTest extends FeatureTestCase
     public function test_swapping_subscription_and_adopting_new_quantity()
     {
         $user = $this->createCustomer('swapping_subscription_and_adopting_new_quantity');
-        $subscription = $user->newSubscription('main', static::$priceId)
-            ->quantity(5, static::$priceId)
+        $subscription = $user->newSubscription('main', static::$planId)
+            ->quantity(5, static::$planId)
             ->create('pm_card_visa');
 
-        $subscription = $subscription->swap([static::$otherPriceId => ['quantity' => 3]]);
+        $subscription = $subscription->swap([static::$otherPlanId => ['quantity' => 3]]);
 
         $this->assertSame(3, $subscription->quantity);
         $this->assertSame(3, $subscription->asStripeSubscription()->quantity);
-    }
-
-    public function test_declined_card_during_new_quantity()
-    {
-        $user = $this->createCustomer('declined_card_during_new_quantity');
-
-        $subscription = $user->newSubscription('main', static::$priceId)
-            ->quantity(5)
-            ->create('pm_card_visa');
-
-        // Set a faulty card as the customer's default payment method.
-        $user->updateDefaultPaymentMethod('pm_card_chargeCustomerFail');
-
-        try {
-            // Attempt to increment quantity and pay with a faulty card.
-            $subscription = $subscription->incrementAndInvoice(3);
-
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
-            // Assert that the payment needs a valid payment method.
-            $this->assertTrue($e->payment->requiresPaymentMethod());
-
-            // Assert that the quantity was updated anyway.
-            $this->assertEquals(8, $subscription->refresh()->quantity);
-
-            // Assert subscription is past due.
-            $this->assertTrue($subscription->pastDue());
-        }
-    }
-
-    public function test_declined_card_during_new_quantity_for_specific_price()
-    {
-        $user = $this->createCustomer('declined_card_during_new_quantity_for_specific_price');
-
-        $subscription = $user->newSubscription('main', static::$priceId)
-            ->quantity(5, static::$priceId)
-            ->create('pm_card_visa');
-
-        // Set a faulty card as the customer's default payment method.
-        $user->updateDefaultPaymentMethod('pm_card_chargeCustomerFail');
-
-        try {
-            // Attempt to increment quantity and pay with a faulty card.
-            $subscription = $subscription->incrementAndInvoice(3);
-
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
-            // Assert that the payment needs a valid payment method.
-            $this->assertTrue($e->payment->requiresPaymentMethod());
-
-            // Assert that the quantity was updated anyway.
-            $this->assertEquals(8, $subscription->refresh()->quantity);
-
-            // Assert subscription is past due.
-            $this->assertTrue($subscription->pastDue());
-        }
     }
 
     public function test_declined_card_during_subscribing_results_in_an_exception()
@@ -283,10 +248,10 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('declined_card_during_subscribing_results_in_an_exception');
 
         try {
-            $user->newSubscription('main', static::$priceId)->create('pm_card_chargeCustomerFail');
+            $user->newSubscription('main', static::$planId)->create('pm_card_chargeCustomerFail');
 
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
+            $this->fail('Expected exception '.PaymentFailure::class.' was not thrown.');
+        } catch (PaymentFailure $e) {
             // Assert that the payment needs a valid payment method.
             $this->assertTrue($e->payment->requiresPaymentMethod());
 
@@ -303,10 +268,10 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('next_action_needed_during_subscribing_results_in_an_exception');
 
         try {
-            $user->newSubscription('main', static::$priceId)->create('pm_card_threeDSecure2Required');
+            $user->newSubscription('main', static::$planId)->create('pm_card_threeDSecure2Required');
 
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
+            $this->fail('Expected exception '.PaymentActionRequired::class.' was not thrown.');
+        } catch (PaymentActionRequired $e) {
             // Assert that the payment needs an extra action.
             $this->assertTrue($e->payment->requiresAction());
 
@@ -318,52 +283,52 @@ class SubscriptionsTest extends FeatureTestCase
         }
     }
 
-    public function test_declined_card_during_price_swap_results_in_an_exception()
+    public function test_declined_card_during_plan_swap_results_in_an_exception()
     {
-        $user = $this->createCustomer('declined_card_during_price_swap_results_in_an_exception');
+        $user = $this->createCustomer('declined_card_during_plan_swap_results_in_an_exception');
 
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         // Set a faulty card as the customer's default payment method.
         $user->updateDefaultPaymentMethod('pm_card_chargeCustomerFail');
 
         try {
             // Attempt to swap and pay with a faulty card.
-            $subscription = $subscription->swapAndInvoice(static::$premiumPriceId);
+            $subscription = $subscription->swapAndInvoice(static::$premiumPlanId);
 
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
+            $this->fail('Expected exception '.PaymentFailure::class.' was not thrown.');
+        } catch (PaymentFailure $e) {
             // Assert that the payment needs a valid payment method.
             $this->assertTrue($e->payment->requiresPaymentMethod());
 
-            // Assert that the price was swapped anyway.
-            $this->assertEquals(static::$premiumPriceId, $subscription->refresh()->stripe_price);
+            // Assert that the plan was swapped anyway.
+            $this->assertEquals(static::$premiumPlanId, $subscription->refresh()->stripe_plan);
 
             // Assert subscription is past due.
             $this->assertTrue($subscription->pastDue());
         }
     }
 
-    public function test_next_action_needed_during_price_swap_results_in_an_exception()
+    public function test_next_action_needed_during_plan_swap_results_in_an_exception()
     {
-        $user = $this->createCustomer('next_action_needed_during_price_swap_results_in_an_exception');
+        $user = $this->createCustomer('next_action_needed_during_plan_swap_results_in_an_exception');
 
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         // Set a card that requires a next action as the customer's default payment method.
         $user->updateDefaultPaymentMethod('pm_card_threeDSecure2Required');
 
         try {
             // Attempt to swap and pay with a faulty card.
-            $subscription = $subscription->swapAndInvoice(static::$premiumPriceId);
+            $subscription = $subscription->swapAndInvoice(static::$premiumPlanId);
 
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
+            $this->fail('Expected exception '.PaymentActionRequired::class.' was not thrown.');
+        } catch (PaymentActionRequired $e) {
             // Assert that the payment needs an extra action.
             $this->assertTrue($e->payment->requiresAction());
 
-            // Assert that the price was swapped anyway.
-            $this->assertEquals(static::$premiumPriceId, $subscription->refresh()->stripe_price);
+            // Assert that the plan was swapped anyway.
+            $this->assertEquals(static::$premiumPlanId, $subscription->refresh()->stripe_plan);
 
             // Assert subscription is past due.
             $this->assertTrue($subscription->pastDue());
@@ -374,16 +339,16 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('downgrade_with_faulty_card_does_not_incomplete_subscription');
 
-        $subscription = $user->newSubscription('main', static::$premiumPriceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$premiumPlanId)->create('pm_card_visa');
 
         // Set a card that requires a next action as the customer's default payment method.
         $user->updateDefaultPaymentMethod('pm_card_chargeCustomerFail');
 
         // Attempt to swap and pay with a faulty card.
-        $subscription = $subscription->swap(static::$priceId);
+        $subscription = $subscription->swap(static::$planId);
 
-        // Assert that the price was swapped anyway.
-        $this->assertEquals(static::$priceId, $subscription->refresh()->stripe_price);
+        // Assert that the plan was swapped anyway.
+        $this->assertEquals(static::$planId, $subscription->refresh()->stripe_plan);
 
         // Assert subscription is still active.
         $this->assertTrue($subscription->active());
@@ -393,16 +358,16 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('downgrade_with_3d_secure_does_not_incomplete_subscription');
 
-        $subscription = $user->newSubscription('main', static::$premiumPriceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$premiumPlanId)->create('pm_card_visa');
 
         // Set a card that requires a next action as the customer's default payment method.
         $user->updateDefaultPaymentMethod('pm_card_threeDSecure2Required');
 
         // Attempt to swap and pay with a faulty card.
-        $subscription = $subscription->swap(static::$priceId);
+        $subscription = $subscription->swap(static::$planId);
 
-        // Assert that the price was swapped anyway.
-        $this->assertEquals(static::$priceId, $subscription->refresh()->stripe_price);
+        // Assert that the plan was swapped anyway.
+        $this->assertEquals(static::$planId, $subscription->refresh()->stripe_plan);
 
         // Assert subscription is still active.
         $this->assertTrue($subscription->active());
@@ -413,15 +378,15 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('creating_subscription_with_coupons');
 
         // Create Subscription
-        $user->newSubscription('main', static::$priceId)
+        $user->newSubscription('main', static::$planId)
             ->withCoupon(static::$couponId)
             ->create('pm_card_visa');
 
         $subscription = $user->subscription('main');
 
         $this->assertTrue($user->subscribed('main'));
-        $this->assertTrue($user->subscribed('main', static::$priceId));
-        $this->assertFalse($user->subscribed('main', static::$otherPriceId));
+        $this->assertTrue($user->subscribed('main', static::$planId));
+        $this->assertFalse($user->subscribed('main', static::$otherPlanId));
         $this->assertTrue($subscription->active());
         $this->assertFalse($subscription->cancelled());
         $this->assertFalse($subscription->onGracePeriod());
@@ -431,12 +396,10 @@ class SubscriptionsTest extends FeatureTestCase
         // Invoice Tests
         $invoice = $user->invoices()[0];
 
-        $coupon = $invoice->discounts()[0]->coupon();
-
         $this->assertTrue($invoice->hasDiscount());
         $this->assertEquals('$5.00', $invoice->total());
-        $this->assertEquals('$5.00', $coupon->amountOff());
-        $this->assertFalse($coupon->isPercentage());
+        $this->assertEquals('$5.00', $invoice->amountOff());
+        $this->assertFalse($invoice->discountIsPercentage());
     }
 
     public function test_creating_subscription_with_an_anchored_billing_cycle()
@@ -444,15 +407,15 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('creating_subscription_with_an_anchored_billing_cycle');
 
         // Create Subscription
-        $user->newSubscription('main', static::$priceId)
+        $user->newSubscription('main', static::$planId)
             ->anchorBillingCycleOn(new DateTime('first day of next month'))
             ->create('pm_card_visa');
 
         $subscription = $user->subscription('main');
 
         $this->assertTrue($user->subscribed('main'));
-        $this->assertTrue($user->subscribed('main', static::$priceId));
-        $this->assertFalse($user->subscribed('main', static::$otherPriceId));
+        $this->assertTrue($user->subscribed('main', static::$planId));
+        $this->assertFalse($user->subscribed('main', static::$otherPlanId));
         $this->assertTrue($subscription->active());
         $this->assertFalse($subscription->cancelled());
         $this->assertFalse($subscription->onGracePeriod());
@@ -478,7 +441,7 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('creating_subscription_with_trial');
 
         // Create Subscription
-        $user->newSubscription('main', static::$priceId)
+        $user->newSubscription('main', static::$planId)
             ->trialDays(7)
             ->create('pm_card_visa');
 
@@ -518,28 +481,12 @@ class SubscriptionsTest extends FeatureTestCase
         $this->assertSame($tomorrow, $user->trialEndsAt());
     }
 
-    public function test_user_with_subscription_can_return_generic_trial_end_date()
-    {
-        $user = $this->createCustomer('user_with_subscription_can_return_generic_trial_end_date');
-        $user->trial_ends_at = $tomorrow = Carbon::tomorrow();
-
-        $user->newSubscription('default', static::$priceId)
-            ->create('pm_card_visa');
-
-        $subscription = $user->subscription('default');
-
-        $this->assertTrue($user->onGenericTrial());
-        $this->assertTrue($user->onTrial());
-        $this->assertFalse($subscription->onTrial());
-        $this->assertSame($tomorrow, $user->trialEndsAt());
-    }
-
     public function test_creating_subscription_with_explicit_trial()
     {
         $user = $this->createCustomer('creating_subscription_with_explicit_trial');
 
         // Create Subscription
-        $user->newSubscription('main', static::$priceId)
+        $user->newSubscription('main', static::$planId)
             ->trialUntil(Carbon::tomorrow()->hour(3)->minute(15))
             ->create('pm_card_visa');
 
@@ -574,26 +521,26 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('subscription_changes_can_be_prorated');
 
-        $subscription = $user->newSubscription('main', static::$premiumPriceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$premiumPlanId)->create('pm_card_visa');
 
         $this->assertEquals(2000, ($invoice = $user->invoices()->first())->rawTotal());
 
-        $subscription->noProrate()->swap(static::$priceId);
+        $subscription->noProrate()->swap(static::$planId);
 
         // Assert that no new invoice was created because of no prorating.
         $this->assertEquals($invoice->id, $user->invoices()->first()->id);
         $this->assertEquals(1000, $user->upcomingInvoice()->rawTotal());
 
-        $subscription->swapAndInvoice(static::$premiumPriceId);
+        $subscription->swapAndInvoice(static::$premiumPlanId);
 
         // Assert that a new invoice was created because of immediate invoicing.
         $this->assertNotSame($invoice->id, ($invoice = $user->invoices()->first())->id);
         $this->assertEquals(1000, $invoice->rawTotal());
         $this->assertEquals(2000, $user->upcomingInvoice()->rawTotal());
 
-        $subscription->prorate()->swap(static::$priceId);
+        $subscription->prorate()->swap(static::$planId);
 
-        // Get back from unused time on premium price on next invoice.
+        // Get back from unused time on premium plan on next invoice.
         $this->assertEquals(0, $user->upcomingInvoice()->rawTotal());
     }
 
@@ -601,13 +548,13 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('trial_remains_when_customer_is_invoiced_immediately_on_swap');
 
-        $subscription = $user->newSubscription('main', static::$priceId)
+        $subscription = $user->newSubscription('main', static::$planId)
             ->trialDays(5)
             ->create('pm_card_visa');
 
         $this->assertTrue($subscription->onTrial());
 
-        $subscription = $subscription->swapAndInvoice(static::$otherPriceId);
+        $subscription = $subscription->swapAndInvoice(static::$otherPlanId);
 
         $this->assertTrue($subscription->onTrial());
     }
@@ -616,13 +563,13 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('trial_on_swap_is_skipped_when_explicitly_asked_to');
 
-        $subscription = $user->newSubscription('main', static::$priceId)
+        $subscription = $user->newSubscription('main', static::$planId)
             ->trialDays(5)
             ->create('pm_card_visa');
 
         $this->assertTrue($subscription->onTrial());
 
-        $subscription = $subscription->skipTrial()->swapAndInvoice(static::$otherPriceId);
+        $subscription = $subscription->skipTrial()->swapAndInvoice(static::$otherPlanId);
 
         $this->assertFalse($subscription->onTrial());
     }
@@ -631,19 +578,19 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('no_prorate_on_subscription_create');
 
-        $subscription = $user->newSubscription('main', static::$priceId)->noProrate()->create('pm_card_visa', [], [
+        $subscription = $user->newSubscription('main', static::$planId)->noProrate()->create('pm_card_visa', [], [
             'collection_method' => 'send_invoice',
             'days_until_due' => 30,
             'backdate_start_date' => Carbon::now()->addDays(5)->subYear()->startOfDay()->unix(),
             'billing_cycle_anchor' => Carbon::now()->addDays(5)->startOfDay()->unix(),
         ]);
 
-        $this->assertEquals(static::$priceId, $subscription->stripe_price);
+        $this->assertEquals(static::$planId, $subscription->stripe_plan);
         $this->assertTrue($subscription->active());
 
-        $subscription = $subscription->swap(self::$otherPriceId);
+        $subscription = $subscription->swap(self::$otherPlanId);
 
-        $this->assertEquals(static::$otherPriceId, $subscription->stripe_price);
+        $this->assertEquals(static::$otherPlanId, $subscription->stripe_plan);
         $this->assertTrue($subscription->active());
     }
 
@@ -651,23 +598,23 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('always_invoice_after_no_prorate');
 
-        $subscription = $user->newSubscription('main', static::$priceId)->noProrate()->create('pm_card_visa', [], [
+        $subscription = $user->newSubscription('main', static::$planId)->noProrate()->create('pm_card_visa', [], [
             'collection_method' => 'send_invoice',
             'days_until_due' => 30,
             'backdate_start_date' => Carbon::now()->addDays(5)->subYear()->startOfDay()->unix(),
             'billing_cycle_anchor' => Carbon::now()->addDays(5)->startOfDay()->unix(),
         ]);
 
-        $this->assertEquals(static::$priceId, $subscription->stripe_price);
+        $this->assertEquals(static::$planId, $subscription->stripe_plan);
         $this->assertCount(0, $user->invoices());
-        $this->assertSame(StripeInvoice::STATUS_DRAFT, $user->upcomingInvoice()->status);
+        $this->assertSame(Invoice::STATUS_DRAFT, $user->upcomingInvoice()->status);
         $this->assertTrue($subscription->active());
 
-        $subscription = $subscription->swapAndInvoice(self::$otherPriceId);
+        $subscription = $subscription->swapAndInvoice(self::$otherPlanId);
 
-        $this->assertEquals(static::$otherPriceId, $subscription->stripe_price);
+        $this->assertEquals(static::$otherPlanId, $subscription->stripe_plan);
         $this->assertCount(0, $user->invoices());
-        $this->assertSame(StripeInvoice::STATUS_DRAFT, $user->upcomingInvoice()->status);
+        $this->assertSame(Invoice::STATUS_DRAFT, $user->upcomingInvoice()->status);
         $this->assertTrue($subscription->active());
     }
 
@@ -675,7 +622,7 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('trials_can_be_extended');
 
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         $this->assertNull($subscription->trial_ends_at);
 
@@ -689,7 +636,7 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('trials_can_be_ended');
 
-        $subscription = $user->newSubscription('main', static::$priceId)
+        $subscription = $user->newSubscription('main', static::$planId)
             ->trialDays(10)
             ->create('pm_card_visa');
 
@@ -702,7 +649,7 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('applying_coupons_to_existing_customers');
 
-        $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         $user->applyCoupon(static::$couponId);
 
@@ -720,7 +667,7 @@ class SubscriptionsTest extends FeatureTestCase
             'name' => 'yearly',
             'stripe_id' => 'xxxx',
             'stripe_status' => StripeSubscription::STATUS_INCOMPLETE,
-            'stripe_price' => 'stripe-yearly',
+            'stripe_plan' => 'stripe-yearly',
             'quantity' => 1,
             'trial_ends_at' => null,
             'ends_at' => null,
@@ -814,10 +761,10 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('retrieve_the_latest_payment_for_a_subscription');
 
         try {
-            $user->newSubscription('main', static::$priceId)->create('pm_card_threeDSecure2Required');
+            $user->newSubscription('main', static::$planId)->create('pm_card_threeDSecure2Required');
 
-            $this->fail('Expected exception '.IncompletePayment::class.' was not thrown.');
-        } catch (IncompletePayment $e) {
+            $this->fail('Expected exception '.PaymentActionRequired::class.' was not thrown.');
+        } catch (PaymentActionRequired $e) {
             $subscription = $user->refresh()->subscription('main');
 
             $this->assertInstanceOf(Payment::class, $payment = $subscription->latestPayment());
@@ -830,7 +777,7 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('subscriptions_with_tax_rates_can_be_created');
         $user->taxRates = [self::$taxRateId];
 
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
         $stripeSubscription = $subscription->asStripeSubscription();
 
         $this->assertEquals([self::$taxRateId], [$stripeSubscription->default_tax_rates[0]->id]);
@@ -841,7 +788,7 @@ class SubscriptionsTest extends FeatureTestCase
         $user = $this->createCustomer('subscriptions_with_options_can_be_created');
 
         $backdateStartDate = now()->subMonth()->getTimestamp();
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa', [], [
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa', [], [
             'backdate_start_date' => $backdateStartDate,
         ]);
         $stripeSubscription = $subscription->asStripeSubscription();
@@ -858,7 +805,7 @@ class SubscriptionsTest extends FeatureTestCase
             'name' => 'default',
             'stripe_id' => 'sub_xxx',
             'stripe_status' => 'active',
-            'stripe_price' => 'price_xxx',
+            'stripe_plan' => 'price_xxx',
             'quantity' => 1,
             'trial_ends_at' => null,
             'ends_at' => null,
@@ -876,7 +823,7 @@ class SubscriptionsTest extends FeatureTestCase
             'name' => 'default',
             'stripe_id' => 'sub_xxx',
             'stripe_status' => 'active',
-            'stripe_price' => 'price_xxx',
+            'stripe_plan' => 'price_xxx',
             'quantity' => 1,
             'trial_ends_at' => null,
             'ends_at' => null,
@@ -889,24 +836,12 @@ class SubscriptionsTest extends FeatureTestCase
     {
         $user = $this->createCustomer('subscriptions_can_be_cancelled_at_a_specific_time');
 
-        $subscription = $user->newSubscription('main', static::$priceId)->create('pm_card_visa');
+        $subscription = $user->newSubscription('main', static::$planId)->create('pm_card_visa');
 
         $subscription = $subscription->cancelAt($endsAt = now()->addMonths(3));
 
         $this->assertTrue($subscription->active());
         $this->assertSame($endsAt->timestamp, $subscription->ends_at->timestamp);
         $this->assertSame($endsAt->timestamp, $subscription->asStripeSubscription()->cancel_at);
-    }
-
-    public function test_upcoming_invoice()
-    {
-        $user = $this->createCustomer('subscription_upcoming_invoice');
-        $subscription = $user->newSubscription('main', static::$priceId)
-            ->create('pm_card_visa');
-
-        $invoice = $subscription->previewInvoice(static::$otherPriceId);
-
-        $this->assertSame('draft', $invoice->status);
-        $this->assertSame(1000, $invoice->total);
     }
 }

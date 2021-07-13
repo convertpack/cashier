@@ -2,7 +2,12 @@
 
 namespace Laravel\Cashier\Tests\Feature;
 
+use Illuminate\Support\Str;
 use Laravel\Cashier\Checkout;
+use Stripe\Checkout\Session as StripeCheckoutSession;
+use Stripe\Coupon;
+use Stripe\Price as StripePrice;
+use Stripe\TaxRate;
 
 class CheckoutTest extends FeatureTestCase
 {
@@ -10,7 +15,7 @@ class CheckoutTest extends FeatureTestCase
     {
         $user = $this->createCustomer('customers_can_start_a_product_checkout_session');
 
-        $shirtPrice = self::stripe()->prices->create([
+        $shirtPrice = StripePrice::create([
             'currency' => 'USD',
             'product_data' => [
                 'name' => 'T-shirt',
@@ -18,7 +23,7 @@ class CheckoutTest extends FeatureTestCase
             'unit_amount' => 1500,
         ]);
 
-        $carPrice = self::stripe()->prices->create([
+        $carPrice = StripePrice::create([
             'currency' => 'USD',
             'product_data' => [
                 'name' => 'Car',
@@ -34,34 +39,7 @@ class CheckoutTest extends FeatureTestCase
         ]);
 
         $this->assertInstanceOf(Checkout::class, $checkout);
-    }
-
-    public function test_customers_can_start_a_product_checkout_session_with_a_coupon_applied()
-    {
-        $user = $this->createCustomer('customers_can_start_a_product_checkout_session_with_a_coupon_applied');
-
-        $shirtPrice = self::stripe()->prices->create([
-            'currency' => 'USD',
-            'product_data' => [
-                'name' => 'T-shirt',
-            ],
-            'unit_amount' => 1500,
-        ]);
-
-        $coupon = self::stripe()->coupons->create([
-            'duration' => 'repeating',
-            'amount_off' => 500,
-            'duration_in_months' => 3,
-            'currency' => 'USD',
-        ]);
-
-        $checkout = $user->withCoupon($coupon->id)
-            ->checkout($shirtPrice->id, [
-                'success_url' => 'http://example.com',
-                'cancel_url' => 'http://example.com',
-            ]);
-
-        $this->assertInstanceOf(Checkout::class, $checkout);
+        $this->assertInstanceOf(StripeCheckoutSession::class, $checkout->asStripeCheckoutSession());
     }
 
     public function test_customers_can_start_a_one_off_charge_checkout_session()
@@ -74,13 +52,14 @@ class CheckoutTest extends FeatureTestCase
         ]);
 
         $this->assertInstanceOf(Checkout::class, $checkout);
+        $this->assertInstanceOf(StripeCheckoutSession::class, $checkout->asStripeCheckoutSession());
     }
 
     public function test_customers_can_start_a_subscription_checkout_session()
     {
         $user = $this->createCustomer('customers_can_start_a_subscription_checkout_session');
 
-        $price = self::stripe()->prices->create([
+        $price = StripePrice::create([
             'currency' => 'USD',
             'product_data' => [
                 'name' => 'Forge',
@@ -90,7 +69,7 @@ class CheckoutTest extends FeatureTestCase
             'unit_amount' => 1500,
         ]);
 
-        $taxRate = self::stripe()->taxRates->create([
+        $taxRate = TaxRate::create([
             'display_name' => 'VAT',
             'description' => 'VAT Belgium',
             'jurisdiction' => 'BE',
@@ -108,10 +87,12 @@ class CheckoutTest extends FeatureTestCase
             ]);
 
         $this->assertInstanceOf(Checkout::class, $checkout);
-        $this->assertTrue($checkout->allow_promotion_codes);
-        $this->assertSame(1815, $checkout->amount_total);
+        $this->assertInstanceOf(StripeCheckoutSession::class, $session = $checkout->asStripeCheckoutSession());
+        $this->assertTrue($session->allow_promotion_codes);
+        $this->assertSame(1815, $session->amount_total);
 
-        $coupon = self::stripe()->coupons->create([
+        $coupon = Coupon::create([
+            'id' => 'coupon-'.Str::random(10),
             'duration' => 'repeating',
             'amount_off' => 500,
             'duration_in_months' => 3,
@@ -126,7 +107,8 @@ class CheckoutTest extends FeatureTestCase
             ]);
 
         $this->assertInstanceOf(Checkout::class, $checkout);
-        $this->assertNull($checkout->allow_promotion_codes);
-        $this->assertSame(1210, $checkout->amount_total);
+        $this->assertInstanceOf(StripeCheckoutSession::class, $session = $checkout->asStripeCheckoutSession());
+        $this->assertNull($session->allow_promotion_codes);
+        $this->assertSame(1210, $session->amount_total);
     }
 }

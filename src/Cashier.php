@@ -7,8 +7,6 @@ use Money\Currency;
 use Money\Formatter\IntlMoneyFormatter;
 use Money\Money;
 use NumberFormatter;
-use Stripe\Customer as StripeCustomer;
-use Stripe\StripeClient;
 
 class Cashier
 {
@@ -17,14 +15,14 @@ class Cashier
      *
      * @var string
      */
-    const VERSION = '13.4.1';
+    const VERSION = '12.15.0';
 
     /**
      * The Stripe API version.
      *
      * @var string
      */
-    const STRIPE_VERSION = '2020-08-27';
+    const STRIPE_VERSION = '2020-03-02';
 
     /**
      * The custom currency formatter.
@@ -55,20 +53,6 @@ class Cashier
     public static $deactivatePastDue = true;
 
     /**
-     * Indicates if Cashier will automatically calculate taxes using Stripe Tax.
-     *
-     * @var bool
-     */
-    public static $calculatesTaxes = false;
-
-    /**
-     * The default customer model class name.
-     *
-     * @var string
-     */
-    public static $customerModel = 'App\\Models\\User';
-
-    /**
      * The subscription model class name.
      *
      * @var string
@@ -83,30 +67,34 @@ class Cashier
     public static $subscriptionItemModel = SubscriptionItem::class;
 
     /**
-     * Get the customer instance by its Stripe ID.
+     * Get the customer instance by Stripe ID.
      *
-     * @param  \Stripe\Customer|string|null  $stripeId
+     * @param  string  $stripeId
      * @return \Laravel\Cashier\Billable|null
      */
     public static function findBillable($stripeId)
     {
-        $stripeId = $stripeId instanceof StripeCustomer ? $stripeId->id : $stripeId;
+        if ($stripeId === null) {
+            return;
+        }
 
-        return $stripeId ? (new static::$customerModel)->where('stripe_id', $stripeId)->first() : null;
+        $model = config('cashier.model');
+
+        return (new $model)->where('stripe_id', $stripeId)->first();
     }
 
     /**
-     * Get the Stripe SDK client.
+     * Get the default Stripe API options.
      *
      * @param  array  $options
-     * @return \Stripe\StripeClient
+     * @return array
      */
-    public static function stripe(array $options = [])
+    public static function stripeOptions(array $options = [])
     {
-        return new StripeClient(array_merge([
-            'api_key' => $options['api_key'] ?? config('cashier.secret'),
+        return array_merge([
+            'api_key' => config('cashier.secret'),
             'stripe_version' => static::STRIPE_VERSION,
-        ], $options));
+        ], $options);
     }
 
     /**
@@ -178,29 +166,6 @@ class Cashier
         static::$deactivatePastDue = false;
 
         return new static;
-    }
-
-    /**
-     * Configure Cashier to automatically calculate taxes using Stripe Tax.
-     *
-     * @return static
-     */
-    public static function calculateTaxes()
-    {
-        static::$calculatesTaxes = true;
-
-        return new static;
-    }
-
-    /**
-     * Set the customer model class name.
-     *
-     * @param  string  $customerModel
-     * @return void
-     */
-    public static function useCustomerModel($customerModel)
-    {
-        static::$customerModel = $customerModel;
     }
 
     /**

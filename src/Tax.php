@@ -102,7 +102,7 @@ class Tax
     }
 
     /**
-     * Dynamically get values from the Stripe object.
+     * Dynamically get values from the Stripe TaxRate.
      *
      * @param  string  $key
      * @return mixed

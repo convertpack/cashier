@@ -5,9 +5,9 @@ namespace Laravel\Cashier\Concerns;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Collection;
 use Laravel\Cashier\Cashier;
-use Laravel\Cashier\CustomerBalanceTransaction;
 use Laravel\Cashier\Exceptions\CustomerAlreadyCreated;
 use Laravel\Cashier\Exceptions\InvalidCustomer;
+use Stripe\BillingPortal\Session as StripeBillingPortalSession;
 use Stripe\Customer as StripeCustomer;
 use Stripe\Exception\InvalidRequestException as StripeInvalidRequestException;
 
@@ -61,26 +61,16 @@ trait ManagesCustomer
             throw CustomerAlreadyCreated::exists($this);
         }
 
-        if (! array_key_exists('name', $options) && $name = $this->stripeName()) {
-            $options['name'] = $name;
-        }
-
         if (! array_key_exists('email', $options) && $email = $this->stripeEmail()) {
             $options['email'] = $email;
-        }
-
-        if (! array_key_exists('phone', $options) && $phone = $this->stripePhone()) {
-            $options['phone'] = $phone;
-        }
-
-        if (! array_key_exists('address', $options) && $address = $this->stripeAddress()) {
-            $options['address'] = $address;
         }
 
         // Here we will create the customer instance on Stripe and store the ID of the
         // user from Stripe. This ID will correspond with the Stripe user instances
         // and allow us to retrieve users from Stripe later when we need to work.
-        $customer = $this->stripe()->customers->create($options);
+        $customer = StripeCustomer::create(
+            $options, $this->stripeOptions()
+        );
 
         $this->stripe_id = $customer->id;
 
@@ -97,8 +87,8 @@ trait ManagesCustomer
      */
     public function updateStripeCustomer(array $options = [])
     {
-        return $this->stripe()->customers->update(
-            $this->stripe_id, $options
+        return StripeCustomer::update(
+            $this->stripe_id, $options, $this->stripeOptions()
         );
     }
 
@@ -120,78 +110,23 @@ trait ManagesCustomer
     /**
      * Get the Stripe customer for the model.
      *
-     * @param  array  $expand
      * @return \Stripe\Customer
      */
-    public function asStripeCustomer(array $expand = [])
+    public function asStripeCustomer()
     {
         $this->assertCustomerExists();
 
-        return $this->stripe()->customers->retrieve(
-            $this->stripe_id, ['expand' => $expand]
-        );
+        return StripeCustomer::retrieve($this->stripe_id, $this->stripeOptions());
     }
 
     /**
-     * Get the name that should be synced to Stripe.
-     *
-     * @return string|null
-     */
-    public function stripeName()
-    {
-        return $this->name;
-    }
-
-    /**
-     * Get the email address that should be synced to Stripe.
+     * Get the email address used to create the customer in Stripe.
      *
      * @return string|null
      */
     public function stripeEmail()
     {
         return $this->email;
-    }
-
-    /**
-     * Get the phone number that should be synced to Stripe.
-     *
-     * @return string|null
-     */
-    public function stripePhone()
-    {
-        return $this->phone;
-    }
-
-    /**
-     * Get the address that should be synced to Stripe.
-     *
-     * @return array|null
-     */
-    public function stripeAddress()
-    {
-        // return [
-        //     'city' => 'Little Rock',
-        //     'country' => 'US',
-        //     'line1' => '1 Main St.',
-        //     'line2' => 'Apartment 5',
-        //     'postal_code' => '72201',
-        //     'state' => 'Arkansas',
-        // ];
-    }
-
-    /**
-     * Sync the customer's information to Stripe.
-     *
-     * @return \Stripe\Customer
-     */
-    public function syncStripeCustomerDetails()
-    {
-        return $this->updateStripeCustomer([
-            'name' => $this->stripeName(),
-            'email' => $this->stripeEmail(),
-            'phone' => $this->stripePhone(),
-            'address' => $this->stripeAddress(),
-        ]);
     }
 
     /**
@@ -204,78 +139,11 @@ trait ManagesCustomer
     {
         $this->assertCustomerExists();
 
-        $this->updateStripeCustomer([
-            'coupon' => $coupon,
-        ]);
-    }
+        $customer = $this->asStripeCustomer();
 
-    /**
-     * Get the total balance of the customer.
-     *
-     * @return string
-     */
-    public function balance()
-    {
-        return $this->formatAmount($this->rawBalance());
-    }
+        $customer->coupon = $coupon;
 
-    /**
-     * Get the raw total balance of the customer.
-     *
-     * @return int
-     */
-    public function rawBalance()
-    {
-        if (! $this->hasStripeId()) {
-            return 0;
-        }
-
-        return $this->asStripeCustomer()->balance;
-    }
-
-    /**
-     * Return a customer's balance transactions.
-     *
-     * @param  int  $limit
-     * @param  array  $options
-     * @return \Illuminate\Support\Collection
-     */
-    public function balanceTransactions($limit = 10, array $options = [])
-    {
-        if (! $this->hasStripeId()) {
-            return new Collection();
-        }
-
-        $transactions = $this->stripe()
-            ->customers
-            ->allBalanceTransactions($this->stripe_id, array_merge(['limit' => $limit], $options));
-
-        return Collection::make($transactions->data)->map(function ($transaction) {
-            return new CustomerBalanceTransaction($this, $transaction);
-        });
-    }
-
-    /**
-     * Apply a new amount to the customer's balance.
-     *
-     * @param  int  $amount
-     * @param  string|null  $description
-     * @param  array  $options
-     * @return \Laravel\Cashier\CustomerBalanceTransaction
-     */
-    public function applyBalance($amount, $description = null, array $options = [])
-    {
-        $this->assertCustomerExists();
-
-        $transaction = $this->stripe()
-            ->customers
-            ->createBalanceTransaction($this->stripe_id, array_filter(array_merge([
-                'amount' => $amount,
-                'currency' => $this->preferredCurrency(),
-                'description' => $description,
-            ], $options)));
-
-        return new CustomerBalanceTransaction($this, $transaction);
+        $customer->save();
     }
 
     /**
@@ -289,44 +157,31 @@ trait ManagesCustomer
     }
 
     /**
-     * Format the given amount into a displayable currency.
-     *
-     * @param  int  $amount
-     * @return string
-     */
-    protected function formatAmount($amount)
-    {
-        return Cashier::formatAmount($amount, $this->preferredCurrency());
-    }
-
-    /**
      * Get the Stripe billing portal for this customer.
      *
      * @param  string|null  $returnUrl
-     * @param  array  $options
      * @return string
      */
-    public function billingPortalUrl($returnUrl = null, array $options = [])
+    public function billingPortalUrl($returnUrl = null)
     {
         $this->assertCustomerExists();
 
-        return $this->stripe()->billingPortal->sessions->create(array_merge([
+        return StripeBillingPortalSession::create([
             'customer' => $this->stripeId(),
             'return_url' => $returnUrl ?? route('home'),
-        ], $options))['url'];
+        ], $this->stripeOptions())['url'];
     }
 
     /**
      * Generate a redirect response to the customer's Stripe billing portal.
      *
      * @param  string|null  $returnUrl
-     * @param  array  $options
      * @return \Illuminate\Http\RedirectResponse
      */
-    public function redirectToBillingPortal($returnUrl = null, array $options = [])
+    public function redirectToBillingPortal($returnUrl = null)
     {
         return new RedirectResponse(
-            $this->billingPortalUrl($returnUrl, $options)
+            $this->billingPortalUrl($returnUrl)
         );
     }
 
@@ -340,7 +195,7 @@ trait ManagesCustomer
         $this->assertCustomerExists();
 
         return new Collection(
-            $this->stripe()->customers->allTaxIds($this->stripe_id, $options)->data
+            StripeCustomer::allTaxIds($this->stripe_id, $options, $this->stripeOptions())->data
         );
     }
 
@@ -354,8 +209,8 @@ trait ManagesCustomer
         $this->assertCustomerExists();
 
         try {
-            return $this->stripe()->customers->retrieveTaxId(
-                $this->stripe_id, $id, []
+            return StripeCustomer::retrieveTaxId(
+                $this->stripe_id, $id, [], $this->stripeOptions()
             );
         } catch (StripeInvalidRequestException $exception) {
             //
@@ -373,10 +228,10 @@ trait ManagesCustomer
     {
         $this->assertCustomerExists();
 
-        return $this->stripe()->customers->createTaxId($this->stripe_id, [
+        return StripeCustomer::createTaxId($this->stripe_id, [
             'type' => $type,
             'value' => $value,
-        ]);
+        ], $this->stripeOptions());
     }
 
     /**
@@ -390,7 +245,7 @@ trait ManagesCustomer
         $this->assertCustomerExists();
 
         try {
-            $this->stripe()->customers->deleteTaxId($this->stripe_id, $id);
+            StripeCustomer::deleteTaxId($this->stripe_id, $id, [], $this->stripeOptions());
         } catch (StripeInvalidRequestException $exception) {
             //
         }
@@ -427,13 +282,13 @@ trait ManagesCustomer
     }
 
     /**
-     * Get the Stripe SDK client.
+     * Get the default Stripe API options for the current Billable model.
      *
      * @param  array  $options
-     * @return \Stripe\StripeClient
+     * @return array
      */
-    public static function stripe(array $options = [])
+    public function stripeOptions(array $options = [])
     {
-        return Cashier::stripe($options);
+        return Cashier::stripeOptions($options);
     }
 }

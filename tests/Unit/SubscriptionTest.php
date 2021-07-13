@@ -105,7 +105,7 @@ class SubscriptionTest extends TestCase
 
         $this->expectException(SubscriptionUpdateFailure::class);
 
-        $subscription->swap('premium_price');
+        $subscription->swap('premium_plan');
     }
 
     public function test_incomplete_subscriptions_cannot_update_their_quantity()
@@ -126,19 +126,19 @@ class SubscriptionTest extends TestCase
         (new Subscription)->extendTrial(now()->subDay());
     }
 
-    public function test_we_can_check_if_it_has_a_single_price()
+    public function test_we_can_check_if_it_has_a_single_plan()
     {
-        $subscription = new Subscription(['stripe_price' => 'foo']);
+        $subscription = new Subscription(['stripe_plan' => 'foo']);
 
-        $this->assertTrue($subscription->hasSinglePrice());
-        $this->assertFalse($subscription->hasMultiplePrices());
+        $this->assertTrue($subscription->hasSinglePlan());
+        $this->assertFalse($subscription->hasMultiplePlans());
     }
 
-    public function test_we_can_check_if_it_has_multiple_prices()
+    public function test_we_can_check_if_it_has_multiple_plans()
     {
-        $subscription = new Subscription(['stripe_price' => null]);
+        $subscription = new Subscription(['stripe_plan' => null]);
 
-        $this->assertTrue($subscription->hasMultiplePrices());
-        $this->assertFalse($subscription->hasSinglePrice());
+        $this->assertTrue($subscription->hasMultiplePlans());
+        $this->assertFalse($subscription->hasSinglePlan());
     }
 }

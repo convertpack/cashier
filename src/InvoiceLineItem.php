@@ -5,7 +5,6 @@ namespace Laravel\Cashier;
 use Carbon\Carbon;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Jsonable;
-use Illuminate\Support\Collection;
 use JsonSerializable;
 use Stripe\InvoiceLineItem as StripeInvoiceLineItem;
 use Stripe\TaxRate as StripeTaxRate;
@@ -99,7 +98,7 @@ class InvoiceLineItem implements Arrayable, Jsonable, JsonSerializable
             return 0;
         }
 
-        return (int) Collection::make($this->item->tax_rates)
+        return (int) collect($this->item->tax_rates)
             ->filter(function (StripeTaxRate $taxRate) use ($inclusive) {
                 return $taxRate->inclusive === (bool) $inclusive;
             })
@@ -120,7 +119,7 @@ class InvoiceLineItem implements Arrayable, Jsonable, JsonSerializable
             return 0;
         }
 
-        return (int) Collection::make($this->item->tax_amounts)
+        return (int) collect($this->item->tax_amounts)
             ->filter(function (object $taxAmount) use ($inclusive) {
                 return $taxAmount->inclusive === (bool) $inclusive;
             })

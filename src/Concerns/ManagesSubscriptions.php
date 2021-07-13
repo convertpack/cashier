@@ -12,22 +12,22 @@ trait ManagesSubscriptions
      * Begin creating a new subscription.
      *
      * @param  string  $name
-     * @param  string|string[]  $prices
+     * @param  string|string[]  $plans
      * @return \Laravel\Cashier\SubscriptionBuilder
      */
-    public function newSubscription($name, $prices = [])
+    public function newSubscription($name, $plans)
     {
-        return new SubscriptionBuilder($this, $name, $prices);
+        return new SubscriptionBuilder($this, $name, $plans);
     }
 
     /**
      * Determine if the Stripe model is on trial.
      *
      * @param  string  $name
-     * @param  string|null  $price
+     * @param  string|null  $plan
      * @return bool
      */
-    public function onTrial($name = 'default', $price = null)
+    public function onTrial($name = 'default', $plan = null)
     {
         if (func_num_args() === 0 && $this->onGenericTrial()) {
             return true;
@@ -39,7 +39,7 @@ trait ManagesSubscriptions
             return false;
         }
 
-        return ! $price || $subscription->hasPrice($price);
+        return $plan ? $subscription->hasPlan($plan) : true;
     }
 
     /**
@@ -60,10 +60,6 @@ trait ManagesSubscriptions
      */
     public function trialEndsAt($name = 'default')
     {
-        if (func_num_args() === 0 && $this->onGenericTrial()) {
-            return $this->trial_ends_at;
-        }
-
         if ($subscription = $this->subscription($name)) {
             return $subscription->trial_ends_at;
         }
@@ -75,10 +71,10 @@ trait ManagesSubscriptions
      * Determine if the Stripe model has a given subscription.
      *
      * @param  string  $name
-     * @param  string|null  $price
+     * @param  string|null  $plan
      * @return bool
      */
-    public function subscribed($name = 'default', $price = null)
+    public function subscribed($name = 'default', $plan = null)
     {
         $subscription = $this->subscription($name);
 
@@ -86,7 +82,7 @@ trait ManagesSubscriptions
             return false;
         }
 
-        return ! $price || $subscription->hasPrice($price);
+        return $plan ? $subscription->hasPlan($plan) : true;
     }
 
     /**
@@ -126,13 +122,13 @@ trait ManagesSubscriptions
     }
 
     /**
-     * Determine if the Stripe model is actively subscribed to one of the given products.
+     * Determine if the Stripe model is actively subscribed to one of the given plans.
      *
-     * @param  string|string[]  $products
+     * @param  string|string[]  $plans
      * @param  string  $name
      * @return bool
      */
-    public function subscribedToProduct($products, $name = 'default')
+    public function subscribedToPlan($plans, $name = 'default')
     {
         $subscription = $this->subscription($name);
 
@@ -140,8 +136,8 @@ trait ManagesSubscriptions
             return false;
         }
 
-        foreach ((array) $products as $product) {
-            if ($subscription->hasProduct($product)) {
+        foreach ((array) $plans as $plan) {
+            if ($subscription->hasPlan($plan)) {
                 return true;
             }
         }
@@ -150,53 +146,27 @@ trait ManagesSubscriptions
     }
 
     /**
-     * Determine if the Stripe model is actively subscribed to one of the given prices.
+     * Determine if the customer has a valid subscription on the given plan.
      *
-     * @param  string|string[]  $prices
-     * @param  string  $name
+     * @param  string  $plan
      * @return bool
      */
-    public function subscribedToPrice($prices, $name = 'default')
+    public function onPlan($plan)
     {
-        $subscription = $this->subscription($name);
-
-        if (! $subscription || ! $subscription->valid()) {
-            return false;
-        }
-
-        foreach ((array) $prices as $price) {
-            if ($subscription->hasPrice($price)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Determine if the customer has a valid subscription on the given product.
-     *
-     * @param  string  $price
-     * @return bool
-     */
-    public function onProduct($price)
-    {
-        return ! is_null($this->subscriptions->first(function (Subscription $subscription) use ($price) {
-            return $subscription->valid() && $subscription->hasProduct($price);
+        return ! is_null($this->subscriptions->first(function (Subscription $subscription) use ($plan) {
+            return $subscription->valid() && $subscription->hasPlan($plan);
         }));
     }
 
     /**
-     * Determine if the customer has a valid subscription on the given price.
+     * Get the tax percentage to apply to the subscription.
      *
-     * @param  string  $price
-     * @return bool
+     * @return int|float
+     * @deprecated Please migrate to the new Tax Rates API.
      */
-    public function onPrice($price)
+    public function taxPercentage()
     {
-        return ! is_null($this->subscriptions->first(function (Subscription $subscription) use ($price) {
-            return $subscription->valid() && $subscription->hasPrice($price);
-        }));
+        return 0;
     }
 
     /**
@@ -214,7 +184,7 @@ trait ManagesSubscriptions
      *
      * @return array
      */
-    public function priceTaxRates()
+    public function planTaxRates()
     {
         return [];
     }
