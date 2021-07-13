@@ -5,7 +5,7 @@ namespace Laravel\Cashier;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use DateTimeInterface;
-use Illuminate\Database\Eloquent\Model;
+use Jenssegers\Mongodb\Eloquent\Model;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Laravel\Cashier\Concerns\InteractsWithPaymentBehavior;
