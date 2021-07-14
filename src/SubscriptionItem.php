@@ -3,7 +3,7 @@
 namespace Laravel\Cashier;
 
 use DateTimeInterface;
-use Illuminate\Database\Eloquent\Model;
+use Jenssegers\Mongodb\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Laravel\Cashier\Concerns\InteractsWithPaymentBehavior;
 use Laravel\Cashier\Concerns\Prorates;
