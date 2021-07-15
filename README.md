@@ -1,3 +1,11 @@
+## convertpack/cashier
+
+- This fork is updated to support MongoDB, since it's not officialy supported.
+- Convertpack currently uses branch `mongo-laravel-v6`
+- Forked from `laravel/cashier` release [12.15.0](https://packagist.org/packages/laravel/cashier#v12.15.0)
+
+---
+
 <p align="center"><img src="/art/logo.svg" role="presentation"></p>
 
 <p align="center">
